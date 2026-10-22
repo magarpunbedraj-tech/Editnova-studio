@@ -286,7 +286,8 @@ fn titles_span_clips_and_music_is_mixed_in() {
     fixture(&b, "blue", false);
     let song = d.path().join("song ♪.mp3");
     assert!(Command::new("ffmpeg")
-        .args(["-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=500:duration=6"])
+        // Stereo at -6 dB, like real music, so levels are easy to assert.
+        .args(["-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=500:duration=6", "-af", "volume=4", "-ac", "2"])
         .arg(&song)
         .status()
         .unwrap()
@@ -346,7 +347,7 @@ fn ducking_lowers_music_under_speech() {
     fixture(&v, "red", true);
     let song = d.path().join("song.wav");
     assert!(Command::new("ffmpeg")
-        .args(["-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=900:duration=3"])
+        .args(["-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=900:duration=3", "-af", "volume=4", "-ac", "2"])
         .arg(&song)
         .status()
         .unwrap()
