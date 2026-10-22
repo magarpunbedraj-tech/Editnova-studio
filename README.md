@@ -49,19 +49,15 @@ Windows runner:
    render real video with FFmpeg and check the pixels and sound.
 3. Builds the NSIS installer with FFmpeg bundled.
 4. Smoke-tests it: silent install, checks the bundled files, launches the app.
-5. Uploads the installer as a build artifact. When the commit is tagged
-   `vX.Y.Z`, it publishes a GitHub Release with the installer, checksums and
-   the FFmpeg source archive.
+5. Uploads the installer as a build artifact. If the version in
+   `package.json` has no release yet, it publishes GitHub Release `vX.Y.Z`
+   with the installer, checksums and the FFmpeg source archive.
 
 To release a new version: bump `version` in `package.json`,
 `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml` (plus the
 `editnova-studio` entry in `src-tauri/Cargo.lock`), update
-`docs/RELEASE_NOTES.md`, commit, then tag and push:
-
-```
-git tag v1.0.1
-git push origin main --tags
-```
+`docs/RELEASE_NOTES.md`, then commit and push to `main`. The release is
+created automatically once the build passes.
 
 The website in `website/` is published to GitHub Pages by
 `.github/workflows/website.yml`. In the repository, set **Settings → Pages →

@@ -1,7 +1,8 @@
 name: Build Windows installer
 
-# Every push to main builds and tests the installer.
-# Pushing a tag such as v1.0.0 also publishes it as a GitHub Release.
+# Every push to main builds and tests the installer. When package.json holds a
+# version that has no GitHub Release yet, that build is published as release
+# v<version> automatically. Pushing a tag such as v1.0.1 publishes it too.
 on:
   push:
     branches: [main]
@@ -131,8 +132,24 @@ jobs:
           path: dist-installer/*
           if-no-files-found: error
 
+      - name: Decide whether to publish a release
+        id: rel
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          $tag = "v$version"
+          $isTag = "${{ github.ref }}".StartsWith('refs/tags/v')
+          $isMain = "${{ github.ref }}" -eq 'refs/heads/main' -and "${{ github.event_name }}" -ne 'pull_request'
+          gh release view $tag --repo ${{ github.repository }} *> $null
+          $exists = $LASTEXITCODE -eq 0
+          $publish = $isTag -or ($isMain -and -not $exists)
+          Write-Host "version=$version exists=$exists publish=$publish"
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "publish=$($publish.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          exit 0
+
       - name: Fetch FFmpeg source for the release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: steps.rel.outputs.publish == 'true'
         shell: pwsh
         run: |
           if ($env:FFMPEG_HASH) {
@@ -140,10 +157,13 @@ jobs:
           }
 
       - name: Publish GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: steps.rel.outputs.publish == 'true'
         uses: softprops/action-gh-release@v2
         with:
-          name: EditNova Studio ${{ github.ref_name }}
+          tag_name: ${{ steps.rel.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: EditNova Studio ${{ steps.rel.outputs.tag }}
+          make_latest: true
           body_path: docs/RELEASE_NOTES.md
           files: dist-installer/*
           fail_on_unmatched_files: true
