@@ -1,6 +1,6 @@
 use editnova_studio::{
     media,
-    model::{self, Clip, Project},
+    model::{self, Clip, MediaKind, Music, Placement, Project, TextSize, Title},
 };
 use std::{path::Path, process::Command, sync::atomic::AtomicBool};
 fn fixture(path: &Path, color: &str, audio: bool) {
@@ -53,6 +53,9 @@ fn real_export_normalizes_audio_and_video_and_rejects_overwrite() {
             Clip::new("b", &mb.id, 0.2, 1.2),
         ],
         media: vec![ma, mb],
+        titles: vec![],
+        music: vec![],
+        duck_music: false,
     };
     let target = d.path().join("output.mp4");
     let cancel = AtomicBool::new(false);
@@ -114,6 +117,9 @@ fn repeated_cuts_keep_av_duration_aligned() {
             .map(|i| Clip::new(&i.to_string(), &m.id, 0.25, 0.75))
             .collect(),
         media: vec![m],
+        titles: vec![],
+        music: vec![],
+        duck_music: false,
     };
     let out = d.path().join("cuts.mp4");
     media::render(&p, &out, &AtomicBool::new(false), |_, _| {}).unwrap();
@@ -191,6 +197,9 @@ fn fades_volume_and_progress_are_rendered() {
         fps: 25,
         clips: vec![faded],
         media: vec![m.clone()],
+        titles: vec![],
+        music: vec![],
+        duck_music: false,
     };
     let out = d.path().join("fades.mp4");
     let seen = std::sync::Mutex::new(Vec::<f64>::new());
@@ -229,4 +238,143 @@ fn thumbnail_is_created_and_reused() {
     let second = media::thumbnail(&m, &cache).unwrap();
     assert_eq!(first, second);
     assert_eq!(modified, std::fs::metadata(&second).unwrap().modified().unwrap());
+}
+
+fn crop_pixel(path: &Path, t: &str, crop: &str) -> Vec<u8> {
+    let out = Command::new("ffmpeg")
+        .args(["-v", "error", "-ss", t, "-i"])
+        .arg(path)
+        .args([
+            "-frames:v",
+            "1",
+            "-vf",
+            &format!("crop={crop},scale=1:1"),
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "-",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    out.stdout
+}
+
+fn window_db(path: &Path, start: f64, len: f64) -> f64 {
+    let out = Command::new("ffmpeg")
+        .args(["-hide_banner", "-nostats", "-ss", &start.to_string(), "-t", &len.to_string(), "-i"])
+        .arg(path)
+        .args(["-map", "0:a:0", "-af", "volumedetect", "-f", "null", "-"])
+        .output()
+        .unwrap();
+    let log = String::from_utf8_lossy(&out.stderr);
+    let i = log.find("max_volume:").expect("volumedetect output");
+    log[i + 11..].split_whitespace().next().unwrap().parse().unwrap()
+}
+
+#[test]
+fn titles_span_clips_and_music_is_mixed_in() {
+    if media::find_font(false).is_none() {
+        eprintln!("skipping: no font available for titles");
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    let a = d.path().join("blue1.mp4");
+    let b = d.path().join("blue2.mp4");
+    fixture(&a, "blue", false);
+    fixture(&b, "blue", false);
+    let song = d.path().join("song ♪.mp3");
+    assert!(Command::new("ffmpeg")
+        .args(["-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=500:duration=6"])
+        .arg(&song)
+        .status()
+        .unwrap()
+        .success());
+    let ma = media::probe(&a).unwrap();
+    let mb = media::probe(&b).unwrap();
+    let ms = media::probe(&song).unwrap();
+    assert_eq!(ms.kind, MediaKind::Audio);
+    assert!(ms.audio && ms.width == 0);
+    let mut p = Project::new("Titles", 320, 180, 25);
+    p.clips.push(Clip::new("a", &ma.id, 0.0, 2.0));
+    p.clips.push(Clip::new("b", &mb.id, 0.0, 2.0));
+    // A title that crosses the cut between the two clips.
+    p.titles.push(Title {
+        id: "t".into(),
+        text: "HELLO %{pts} 'quoted', colon: ok".into(),
+        start: 1.0,
+        duration: 2.0,
+        placement: Placement::Center,
+        size: TextSize::Large,
+        color: "#ffffff".into(),
+        backdrop: false,
+    });
+    p.music.push(Music {
+        id: "s".into(),
+        media_id: ms.id.clone(),
+        start: 2.5,
+        r#in: 1.0,
+        out: 4.0,
+        volume: 1.0,
+        fade_in: 0.0,
+        fade_out: 0.0,
+    });
+    p.media = vec![ma, mb, ms];
+    p.validate().unwrap();
+    let out = d.path().join("titled.mp4");
+    media::render(&p, &out, &AtomicBool::new(false), |_, _| {}).unwrap();
+    let probe = media::probe(&out).unwrap();
+    assert!((probe.duration - 4.0).abs() < 0.15);
+    let band = "iw:ih/4:0:ih*3/8";
+    let plain = crop_pixel(&out, "0.5", band);
+    let titled_before_cut = crop_pixel(&out, "1.6", band);
+    let titled_after_cut = crop_pixel(&out, "2.4", band);
+    let after = crop_pixel(&out, "3.6", band);
+    assert!(titled_before_cut[0] > plain[0] + 15, "{plain:?} {titled_before_cut:?}");
+    assert!(titled_after_cut[0] > plain[0] + 15, "{plain:?} {titled_after_cut:?}");
+    assert!(after[0] < plain[0] + 5, "{plain:?} {after:?}");
+    // Sources are silent; only the music should be heard, from 2.5 s.
+    assert!(window_db(&out, 0.2, 2.0) < -60.0);
+    assert!(window_db(&out, 2.8, 1.0) > -20.0);
+}
+
+#[test]
+fn ducking_lowers_music_under_speech() {
+    let d = tempfile::tempdir().unwrap();
+    let v = d.path().join("talk.mp4");
+    fixture(&v, "red", true);
+    let song = d.path().join("song.wav");
+    assert!(Command::new("ffmpeg")
+        .args(["-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=900:duration=3"])
+        .arg(&song)
+        .status()
+        .unwrap()
+        .success());
+    let mv = media::probe(&v).unwrap();
+    let ms = media::probe(&song).unwrap();
+    let mut p = Project::new("Duck", 320, 180, 25);
+    let mut clip = Clip::new("c", &mv.id, 0.0, 2.0);
+    clip.volume = 0.0;
+    p.clips.push(clip);
+    p.music.push(Music {
+        id: "s".into(),
+        media_id: ms.id.clone(),
+        start: 0.0,
+        r#in: 0.0,
+        out: 2.0,
+        volume: 0.5,
+        fade_in: 0.5,
+        fade_out: 0.5,
+    });
+    p.media = vec![mv, ms];
+    let quiet = d.path().join("music-only.mp4");
+    media::render(&p, &quiet, &AtomicBool::new(false), |_, _| {}).unwrap();
+    p.clips[0].volume = 1.0;
+    p.duck_music = true;
+    let ducked = d.path().join("ducked.mp4");
+    media::render(&p, &ducked, &AtomicBool::new(false), |_, _| {}).unwrap();
+    assert!(window_db(&quiet, 0.8, 0.4) > -20.0);
+    assert!(window_db(&ducked, 0.8, 0.4) > -20.0);
+    assert!(media::probe(&ducked).unwrap().audio);
 }

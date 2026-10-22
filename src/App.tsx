@@ -10,7 +10,6 @@ import {
   validate,
   migrate,
   moveTo,
-  remove,
   duplicate,
   setAudio,
   setFades,
@@ -19,12 +18,24 @@ import {
   removeMedia,
   makeClip,
   starts,
+  makeTitle,
+  addTitle,
+  updateTitle,
+  titlesAt,
+  titleAlpha,
+  makeMusic,
+  addMusic,
+  updateMusic,
+  musicAt,
+  musicGain,
+  removeItem,
 } from "./engine.mjs";
 import type { Diagnostics, ExportOptions, Loaded, Media, Project, Recent } from "./types";
 import { api, checkForUpdate, desktop, fileUrl, message, on } from "./api";
 import { clock, fileName } from "./format";
 import { Timeline } from "./ui/Timeline";
 import { Inspector, MediaBin, Welcome } from "./ui/Panels";
+import { MusicInspector, TitleInspector } from "./ui/ItemInspectors";
 import {
   AboutDialog,
   DoneDialog,
@@ -88,14 +99,20 @@ export default function App() {
   );
   const autosaveOn = useRef(false);
   const video = useRef<HTMLVideoElement>(null);
-  const latest = useRef({ p, dirty });
-  latest.current = { p, dirty };
+  const latest = useRef({ p, dirty, time });
+  latest.current = { p, dirty, time };
 
   const total = duration(p);
   const at = locate(p, Math.min(time, Math.max(0, total - 1e-5)));
   const active = at ? p.media.find((m) => m.id === at.clip.mediaId) : undefined;
   const clip = p.clips.find((c) => c.id === selected);
   const clipMedia = clip ? p.media.find((m) => m.id === clip.mediaId) : undefined;
+  const selTitle = p.titles.find((t) => t.id === selected);
+  const selMusic = p.music.find((u) => u.id === selected);
+  const selMusicMedia = selMusic ? p.media.find((m) => m.id === selMusic.mediaId) : undefined;
+  const song = musicAt(p, time);
+  const songMedia = song ? p.media.find((m) => m.id === song.mediaId) : undefined;
+  const music = useRef<HTMLAudioElement>(null);
   const empty = !p.media.length && !p.clips.length;
 
   const say = (text: string) => setNotice({ text });
@@ -205,14 +222,26 @@ export default function App() {
       on<{ items: Media[]; errors: string[] }>("media-dropped", ({ items, errors }) => {
         const cur = latest.current.p;
         if (items.length) {
-          const clips = items.map((m) => makeClip(crypto.randomUUID(), m));
-          edit(() =>
-            change({ ...cur, media: [...cur.media, ...items], clips: [...cur.clips, ...clips] }),
-          );
+          const clips = items
+            .filter((m) => m.kind !== "audio")
+            .map((m) => makeClip(crypto.randomUUID(), m));
+          edit(() => {
+            let next: Project = {
+              ...cur,
+              media: [...cur.media, ...items],
+              clips: [...cur.clips, ...clips],
+            };
+            for (const m of items.filter((m) => m.kind === "audio"))
+              next = addMusic(
+                next,
+                makeMusic(crypto.randomUUID(), m, latest.current.time, duration(next)),
+              );
+            change(next);
+          });
         }
         if (errors.length) setNotice({ text: errors.join(" "), error: true });
         else if (items.length)
-          say(`Added ${items.length} video${items.length > 1 ? "s" : ""} to the timeline.`);
+          say(`Added ${items.length} file${items.length > 1 ? "s" : ""} to the timeline.`);
       }),
       on<string>("project-dropped", (file) => guard(() => openPath(file))),
       on<null>("close-requested", () => {
@@ -275,6 +304,27 @@ export default function App() {
     id = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(id);
   }, [playing, at?.clip.id]);
+
+  // Music preview: follow the playhead with a second media element.
+  useEffect(() => {
+    const a = music.current;
+    if (!a) return;
+    if (!playing || !song || !songMedia) {
+      if (!a.paused) a.pause();
+      return;
+    }
+    const src = fileUrl(songMedia.path);
+    if (a.dataset.src !== src) {
+      a.src = src;
+      a.dataset.src = src;
+    }
+    const want = song.in + (time - song.start);
+    if (Math.abs(a.currentTime - want) > 0.3) a.currentTime = want;
+    let gain = musicGain(song, time);
+    if (p.duckMusic && at && active?.audio && at.clip.volume > 0) gain *= 0.35;
+    a.volume = Math.min(1, Math.max(0, gain));
+    if (a.paused) a.play().catch(() => {});
+  }, [time, playing, song?.id, songMedia?.path, p.duckMusic]);
 
   // Fade and volume preview.
   const level = at ? envelope(at.clip, time - at.start) : 1;
@@ -352,20 +402,52 @@ export default function App() {
       say("New project");
     });
 
+  const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
   const importMedia = () =>
     task(async () => {
       const items = await api.importMedia();
       if (!items.length) return;
       const cur = latest.current.p;
-      const firstTime = !cur.clips.length;
+      const videos = items.filter((m) => m.kind !== "audio");
+      const sounds = items.filter((m) => m.kind === "audio");
+      const firstTime = !cur.clips.length && videos.length > 0;
       const next = { ...cur, media: [...cur.media, ...items] };
-      if (firstTime) next.clips = items.map((m) => makeClip(crypto.randomUUID(), m));
+      if (firstTime) next.clips = videos.map((m) => makeClip(crypto.randomUUID(), m));
       change(next);
+      const parts = [
+        videos.length ? plural(videos.length, "video") : "",
+        sounds.length ? plural(sounds.length, "sound file") : "",
+      ].filter(Boolean);
       say(
-        firstTime
-          ? `Imported ${items.length} video${items.length > 1 ? "s" : ""} and placed them on the timeline.`
-          : `Imported ${items.length} video${items.length > 1 ? "s" : ""}. Click Add to place them on the timeline.`,
+        `Imported ${parts.join(" and ")}.` +
+          (firstTime ? " Videos are on the timeline." : " Click Add to use them."),
       );
+    });
+  /** Adds a sound file to the music track at the playhead. */
+  const placeMusic = (m: Media, at = time) =>
+    edit(() => {
+      const cur = latest.current.p;
+      const u = makeMusic(crypto.randomUUID(), m, at, duration(cur));
+      change(addMusic(cur, u));
+      select(u.id);
+      say(`Added ${m.name} to the music track.`);
+    });
+  const addMusicFromDisk = () =>
+    task(async () => {
+      const items = await api.importMedia(true);
+      if (!items.length) return;
+      const cur = latest.current.p;
+      const u = makeMusic(crypto.randomUUID(), items[0], time, duration(cur));
+      change(addMusic({ ...cur, media: [...cur.media, ...items] }, u));
+      select(u.id);
+      say(`Added ${items[0].name} to the music track.`);
+    });
+  const addTitleHere = () =>
+    edit(() => {
+      const t = makeTitle(crypto.randomUUID(), Math.round(time * 10) / 10);
+      change(addTitle(p, t));
+      select(t.id);
+      say("Title added. Type your words in the panel on the right.");
     });
 
   // ----- Media jobs -----
@@ -405,8 +487,8 @@ export default function App() {
   const splitHere = () =>
     edit(() => change(split(p, Math.round(time * p.fps) / p.fps, crypto.randomUUID())));
   const removeSelected = () => {
-    if (!clip) return;
-    edit(() => change(remove(p, clip.id)));
+    if (!clip && !selTitle && !selMusic) return;
+    edit(() => change(removeItem(p, selected)));
     select("");
   };
   const doUndo = () => {
@@ -485,6 +567,13 @@ export default function App() {
         setPlaying(false);
         seek(total);
       } else if (k === "s") splitHere();
+      else if (k === "t") {
+        e.preventDefault();
+        addTitleHere();
+      } else if (k === "m") {
+        e.preventDefault();
+        addMusicFromDisk();
+      }
       else if (k === "q") edit(() => change(trimToPlayhead(p, time, "in")));
       else if (k === "w") edit(() => change(trimToPlayhead(p, time, "out")));
       else if (e.key === "Delete" || e.key === "Backspace") removeSelected();
@@ -558,11 +647,13 @@ export default function App() {
           busy={busy}
           onImport={importMedia}
           onAdd={(m) =>
-            edit(() => {
-              const c = makeClip(crypto.randomUUID(), m);
-              change({ ...p, clips: [...p.clips, c] });
-              select(c.id);
-            })
+            m.kind === "audio"
+              ? placeMusic(m)
+              : edit(() => {
+                  const c = makeClip(crypto.randomUUID(), m);
+                  change({ ...p, clips: [...p.clips, c] });
+                  select(c.id);
+                })
           }
           onRemove={(m) => edit(() => change(removeMedia(p, m.id)))}
         />
@@ -609,6 +700,23 @@ export default function App() {
                         }}
                       />
                       <div className="fade-veil" style={{ opacity: 1 - level }} />
+                      <div className="title-layer" aria-hidden>
+                        {titlesAt(p, time).map((t) => (
+                          <div key={t.id} className={t.placement}>
+                            <span
+                              className={t.backdrop ? "boxed" : ""}
+                              style={{
+                                color: t.color,
+                                // While paused, show titles fully so they are easy to edit.
+                                opacity: playing ? titleAlpha(t, time) : 1,
+                                fontSize: `${{ small: 4.5, medium: 7, large: 11 }[t.size]}cqh`,
+                              }}
+                            >
+                              {t.text}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
                       {videoFailed && (
                         <div className="screen-msg">
                           <p>The preview can't play {active.name}.</p>
@@ -668,44 +776,85 @@ export default function App() {
             </>
           )}
         </section>
-        <Inspector
-          p={p}
-          clip={clip}
-          media={clipMedia}
-          busy={busy}
-          previewing={previewing}
-          onProject={(q) => edit(() => change(q))}
-          onTrim={(a, b) => edit(() => change(trim(p, clip!.id, a, b)))}
-          onVolume={(v) => edit(() => change(setAudio(p, clip!.id, v)))}
-          onFades={(a, b) => edit(() => change(setFades(p, clip!.id, a, b)))}
-          onAction={(a) => {
-            if (!clip || !clipMedia) return;
-            if (a === "earlier" || a === "later")
-              edit(() => change(reorder(p, clip.id, a === "earlier" ? -1 : 1)));
-            else if (a === "duplicate")
-              edit(() => change(duplicate(p, clip.id, crypto.randomUUID())));
-            else if (a === "remove") removeSelected();
-            else if (a === "preview") buildPreview(clipMedia);
-            else if (a === "relink")
-              task(async () => {
-                const r = await api.relink();
-                if (!r) return;
-                const used = p.clips
-                  .filter((c) => c.mediaId === clipMedia.id)
-                  .reduce((m, c) => Math.max(m, c.out), 0);
-                if (r.duration + 0.05 < used)
-                  throw Error(
-                    `${r.name} is ${clock(r.duration)} long, but clips use this source up to ${clock(used)}. Trim those clips first.`,
-                  );
-                change({
-                  ...p,
-                  media: p.media.map((m) => (m.id === clipMedia.id ? { ...r, id: m.id } : m)),
+        {selTitle ? (
+          <aside className="inspector panel">
+            <div className="panel-head">
+              <h2>Title</h2>
+            </div>
+            <div className="inspector-body">
+              <TitleInspector
+                title={selTitle}
+                onChange={(patch) => edit(() => change(updateTitle(p, selTitle.id, patch)))}
+                onRemove={removeSelected}
+                onDuplicate={() =>
+                  edit(() => {
+                    const t = {
+                      ...selTitle,
+                      id: crypto.randomUUID(),
+                      start: selTitle.start + selTitle.duration,
+                    };
+                    change(addTitle(p, t));
+                    select(t.id);
+                  })
+                }
+              />
+            </div>
+          </aside>
+        ) : selMusic && selMusicMedia ? (
+          <aside className="inspector panel">
+            <div className="panel-head">
+              <h2>Music</h2>
+            </div>
+            <div className="inspector-body">
+              <MusicInspector
+                music={selMusic}
+                media={selMusicMedia}
+                p={p}
+                onChange={(patch) => edit(() => change(updateMusic(p, selMusic.id, patch)))}
+                onRemove={removeSelected}
+              />
+            </div>
+          </aside>
+        ) : (
+          <Inspector
+            p={p}
+            clip={clip}
+            media={clipMedia}
+            busy={busy}
+            previewing={previewing}
+            onProject={(q) => edit(() => change(q))}
+            onTrim={(a, b) => edit(() => change(trim(p, clip!.id, a, b)))}
+            onVolume={(v) => edit(() => change(setAudio(p, clip!.id, v)))}
+            onFades={(a, b) => edit(() => change(setFades(p, clip!.id, a, b)))}
+            onAction={(a) => {
+              if (!clip || !clipMedia) return;
+              if (a === "earlier" || a === "later")
+                edit(() => change(reorder(p, clip.id, a === "earlier" ? -1 : 1)));
+              else if (a === "duplicate")
+                edit(() => change(duplicate(p, clip.id, crypto.randomUUID())));
+              else if (a === "remove") removeSelected();
+              else if (a === "preview") buildPreview(clipMedia);
+              else if (a === "relink")
+                task(async () => {
+                  const r = await api.relink();
+                  if (!r) return;
+                  const used = p.clips
+                    .filter((c) => c.mediaId === clipMedia.id)
+                    .reduce((m, c) => Math.max(m, c.out), 0);
+                  if (r.duration + 0.05 < used)
+                    throw Error(
+                      `${r.name} is ${clock(r.duration)} long, but clips use this source up to ${clock(used)}. Trim those clips first.`,
+                    );
+                  change({
+                    ...p,
+                    media: p.media.map((m) => (m.id === clipMedia.id ? { ...r, id: m.id } : m)),
+                  });
+                  setVideoFailed(false);
+                  say(`Now using ${r.name}`);
                 });
-                setVideoFailed(false);
-                say(`Now using ${r.name}`);
-              });
-          }}
-        />
+            }}
+          />
+        )}
       </div>
 
       <section className="timeline panel">
@@ -721,8 +870,19 @@ export default function App() {
             <button disabled={!total || busy} onClick={splitHere} title="Split at playhead (S)">
               Split <kbd>S</kbd>
             </button>
-            <button disabled={!clip || busy} onClick={removeSelected} title="Remove clip (Delete)">
+            <button
+              disabled={!(clip || selTitle || selMusic) || busy}
+              onClick={removeSelected}
+              title="Remove the selected item (Delete)"
+            >
               Delete <kbd>Del</kbd>
+            </button>
+            <span className="sep" />
+            <button disabled={busy} onClick={addTitleHere} title="Add a title at the playhead (T)">
+              Add title <kbd>T</kbd>
+            </button>
+            <button disabled={busy} onClick={addMusicFromDisk} title="Add music at the playhead (M)">
+              Add music <kbd>M</kbd>
             </button>
           </div>
           <div className="group">
@@ -767,6 +927,15 @@ export default function App() {
             const i = q.clips.findIndex((c) => c.id === id);
             setTime(starts(q)[i]);
           }}
+          onMoveItem={(id, start) =>
+            edit(() =>
+              change(
+                p.titles.some((t) => t.id === id)
+                  ? updateTitle(p, id, { start: Math.round(start * 100) / 100 })
+                  : updateMusic(p, id, { start: Math.round(start * 100) / 100 }),
+              ),
+            )
+          }
           onZoom={setZoom}
         />
       </section>
@@ -776,9 +945,10 @@ export default function App() {
         <span className="engine">{diag ? (diag.ready ? (diag.hardware ? "GPU export ready" : "CPU export ready") : "Media engine missing") : ""}</span>
       </footer>
 
+      <audio ref={music} preload="auto" hidden />
       {hover && (
         <div className="drop-zone" aria-hidden>
-          <p>Drop videos to add them to the timeline</p>
+          <p>Drop videos or music to add them</p>
         </div>
       )}
       {dialog === "export" && (

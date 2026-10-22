@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import type { Project } from "../types";
-import { clipLength, duration, starts } from "../engine.mjs";
+import { clipLength, duration, musicEnd, starts } from "../engine.mjs";
 import { clock, rulerStep } from "../format";
 
 interface Props {
@@ -14,6 +14,7 @@ interface Props {
   onSeek: (t: number) => void;
   onSelect: (id: string) => void;
   onMove: (id: string, to: number) => void;
+  onMoveItem: (id: string, start: number) => void;
   onZoom: (z: number) => void;
 }
 
@@ -23,8 +24,43 @@ export function Timeline(props: Props) {
   const { p, time, zoom, selected, thumbs } = props;
   const scroller = useRef<HTMLDivElement>(null);
   const total = duration(p);
+  const [slide, setSlide] = useState<null | { id: string; x0: number; dx: number; moved: boolean }>(
+    null,
+  );
+  /** Pointer handlers for titles and music: click selects, drag moves in time. */
+  const slider = (id: string, start: number) => ({
+    onPointerDown: (e: React.PointerEvent) => {
+      if (props.disabled || e.button !== 0) return;
+      e.stopPropagation();
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+      setSlide({ id, x0: e.clientX, dx: 0, moved: false });
+    },
+    onPointerMove: (e: React.PointerEvent) => {
+      if (!slide || slide.id !== id) return;
+      const dx = e.clientX - slide.x0;
+      if (slide.moved || Math.abs(dx) > 5) setSlide({ ...slide, dx, moved: true });
+    },
+    onPointerUp: (e: React.PointerEvent) => {
+      if (!slide || slide.id !== id) return;
+      if (slide.moved) {
+        props.onMoveItem(id, Math.max(0, start + slide.dx / zoom));
+        props.onSelect(id);
+      } else {
+        props.onSelect(id);
+        props.onSeek(toTime(e.clientX));
+      }
+      setSlide(null);
+    },
+    onPointerCancel: () => setSlide(null),
+  });
+  const shift = (id: string) => (slide?.id === id && slide.moved ? slide.dx : 0);
+  const width = Math.max(
+    total * zoom + 240,
+    900,
+    ...p.titles.map((t) => (t.start + t.duration) * zoom + 120),
+    ...p.music.map((u) => musicEnd(u) * zoom + 120),
+  );
   const begin = starts(p);
-  const width = Math.max(total * zoom + 240, 900);
   const step = rulerStep(zoom);
   const [drag, setDrag] = useState<null | {
     id: string;
@@ -111,6 +147,26 @@ export function Timeline(props: Props) {
         <div className="tl-lanes" onPointerDown={(e) => {
           if (e.target === e.currentTarget) scrub(e);
         }}>
+          <div className="lane title-lane">
+            {p.titles.map((t) => (
+              <div
+                key={t.id}
+                className={`ttl ${selected === t.id ? "selected" : ""} ${shift(t.id) ? "dragging" : ""}`}
+                style={{
+                  left: PAD + t.start * zoom + shift(t.id),
+                  width: Math.max(14, t.duration * zoom - 2),
+                }}
+                title={`${t.text} (${clock(t.start)} to ${clock(t.start + t.duration)})`}
+                {...slider(t.id, t.start)}
+              >
+                <b>T</b>
+                <span>{t.text}</span>
+              </div>
+            ))}
+            {!p.titles.length && (
+              <p className="lane-hint">Titles: press T to add text at the playhead</p>
+            )}
+          </div>
           <div className="lane video-lane">
             {p.clips.map((c, i) => {
               const m = p.media.find((m) => m.id === c.mediaId);
@@ -193,6 +249,36 @@ export function Timeline(props: Props) {
                 </div>
               );
             })}
+          </div>
+          <div className="lane music-lane">
+            {p.music.map((u) => {
+              const m = p.media.find((m) => m.id === u.mediaId);
+              const thumb = thumbs[u.mediaId];
+              const beyond = u.start + (u.out - u.in) > total + 1e-3;
+              return (
+                <div
+                  key={u.id}
+                  className={`song ${selected === u.id ? "selected" : ""} ${shift(u.id) ? "dragging" : ""}`}
+                  style={{
+                    left: PAD + u.start * zoom + shift(u.id),
+                    width: Math.max(14, (u.out - u.in) * zoom - 2),
+                    backgroundImage: thumb ? `url("${thumb}")` : undefined,
+                  }}
+                  title={`${m?.name ?? "Missing"}${beyond ? " (runs past the end of the video)" : ""}`}
+                  {...slider(u.id, u.start)}
+                >
+                  {u.fadeIn > 0 && <i className="fade in" style={{ width: u.fadeIn * zoom }} />}
+                  {u.fadeOut > 0 && <i className="fade out" style={{ width: u.fadeOut * zoom }} />}
+                  <span>
+                    ♪ {m?.name ?? "Missing"} · {Math.round(u.volume * 100)}%
+                  </span>
+                </div>
+              );
+            })}
+            {!p.music.length && (
+              <p className="lane-hint">Music: press M or use Add music</p>
+            )}
+            {total > 0 && <div className="end-mark" style={{ left: PAD + total * zoom }} />}
           </div>
           {dropIndex >= 0 && (
             <div className="drop-marker" style={{ left: PAD + markerX - 1 }} />

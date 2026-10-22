@@ -14,7 +14,7 @@ export const desktop = () => isTauri();
 export const fileUrl = (path: string) => convertFileSrc(path);
 
 export const api = {
-  importMedia: () => invoke<Media[]>("import_media"),
+  importMedia: (soundOnly = false) => invoke<Media[]>("import_media", { soundOnly }),
   relink: () => invoke<Media | null>("relink"),
   thumbnail: (m: Media) => invoke<string | null>("thumbnail", { m }),
   save: (p: Project, path: string | null) =>

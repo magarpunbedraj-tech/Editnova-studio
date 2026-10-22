@@ -1,4 +1,4 @@
-use crate::model::{Media, Project};
+use crate::model::{Media, MediaKind, Music, Placement, Project, Title};
 use std::{
     hash::{Hash, Hasher},
     io::{Read, Seek, SeekFrom, Write},
@@ -9,6 +9,7 @@ use std::{
 };
 
 pub const VIDEO_EXTENSIONS: [&str; 6] = ["mp4", "mov", "mkv", "webm", "avi", "m4v"];
+pub const AUDIO_EXTENSIONS: [&str; 7] = ["mp3", "wav", "m4a", "aac", "ogg", "flac", "opus"];
 
 /// Locates a media tool. Search order: the `EDITNOVA_FFMPEG_DIR` directory,
 /// the folder containing the EditNova executable (where the Windows installer
@@ -176,12 +177,16 @@ pub fn probe(path: &Path) -> Result<Media, String> {
         .and_then(|s| s.to_str())
         .unwrap_or("")
         .to_lowercase();
-    if !VIDEO_EXTENSIONS.contains(&ext.as_str()) {
+    let kind = if VIDEO_EXTENSIONS.contains(&ext.as_str()) {
+        MediaKind::Video
+    } else if AUDIO_EXTENSIONS.contains(&ext.as_str()) {
+        MediaKind::Audio
+    } else {
         return Err(format!(
-            "{} is not a supported video. EditNova opens MP4, MOV, MKV, WebM, AVI and M4V files.",
+            "{} is not a supported file. EditNova opens MP4, MOV, MKV, WebM, AVI and M4V videos, and MP3, WAV, M4A, AAC, OGG, FLAC and Opus sound files.",
             path.file_name().unwrap_or_default().to_string_lossy()
         ));
-    }
+    };
     let mut c = command("ffprobe");
     c.args([
         "-v",
@@ -222,7 +227,7 @@ pub fn probe(path: &Path) -> Result<Media, String> {
             if !status.success() {
                 let detail = std::fs::read_to_string(errors.path()).unwrap_or_default();
                 return Err(format!(
-                    "{} could not be read as video. {}",
+                    "{} could not be read. {}",
                     path.file_name().unwrap_or_default().to_string_lossy(),
                     detail.trim()
                 ));
@@ -235,15 +240,36 @@ pub fn probe(path: &Path) -> Result<Media, String> {
         serde_json::from_slice(&std::fs::read(output.path()).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
     let streams = j["streams"].as_array().ok_or("No streams")?;
-    let v = streams
-        .iter()
-        .find(|v| v["codec_type"] == "video" && v["disposition"]["attached_pic"] != 1)
-        .ok_or("This file has no video picture")?;
+    let audio = streams.iter().any(|v| v["codec_type"] == "audio");
     let duration = j["format"]["duration"]
         .as_str()
         .and_then(|s| s.parse::<f64>().ok())
         .filter(|v| v.is_finite() && *v > 0.0)
-        .ok_or("This video has no readable duration")?;
+        .ok_or("This file has no readable duration")?;
+    let name: String = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into();
+    if kind == MediaKind::Audio {
+        if !audio {
+            return Err(format!("{name} has no sound"));
+        }
+        return Ok(Media {
+            id: uuid::Uuid::new_v4().to_string(),
+            path: path.to_string_lossy().into(),
+            name,
+            duration,
+            width: 0,
+            height: 0,
+            audio,
+            kind,
+        });
+    }
+    let v = streams
+        .iter()
+        .find(|v| v["codec_type"] == "video" && v["disposition"]["attached_pic"] != 1)
+        .ok_or("This file has no video picture")?;
     let rotation = v["side_data_list"]
         .as_array()
         .and_then(|a| a.iter().find_map(|x| x["rotation"].as_f64()))
@@ -264,15 +290,12 @@ pub fn probe(path: &Path) -> Result<Media, String> {
     Ok(Media {
         id: uuid::Uuid::new_v4().to_string(),
         path: path.to_string_lossy().into(),
-        name: path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into(),
+        name,
         duration,
         width,
         height,
-        audio: streams.iter().any(|v| v["codec_type"] == "audio"),
+        audio,
+        kind,
     })
 }
 
@@ -294,7 +317,8 @@ pub fn file_key(path: &Path) -> Result<String, String> {
 /// Writes (or reuses) a small JPEG poster frame for the media in `cache_dir`.
 pub fn thumbnail(m: &Media, cache_dir: &Path) -> Result<PathBuf, String> {
     std::fs::create_dir_all(cache_dir).map_err(|e| e.to_string())?;
-    let target = cache_dir.join(format!("{}.jpg", file_key(Path::new(&m.path))?));
+    let ext = if m.kind == MediaKind::Audio { "png" } else { "jpg" };
+    let target = cache_dir.join(format!("{}.{ext}", file_key(Path::new(&m.path))?));
     if target
         .metadata()
         .map(|x| x.is_file() && x.len() > 0)
@@ -302,8 +326,7 @@ pub fn thumbnail(m: &Media, cache_dir: &Path) -> Result<PathBuf, String> {
     {
         return Ok(target);
     }
-    let at = (m.duration * 0.1).min(3.0);
-    let tmp = cache_dir.join(format!("{}.part.jpg", uuid::Uuid::new_v4()));
+    let tmp = cache_dir.join(format!("{}.part.{ext}", uuid::Uuid::new_v4()));
     let mut c = command("ffmpeg");
     c.args([
         "-hide_banner",
@@ -313,22 +336,31 @@ pub fn thumbnail(m: &Media, cache_dir: &Path) -> Result<PathBuf, String> {
         "-y",
         "-protocol_whitelist",
         "file,pipe",
-        "-ss",
-        &format!("{at:.3}"),
-        "-i",
-    ])
-    .arg(&m.path)
-    .args([
-        "-map",
-        "0:V:0",
-        "-frames:v",
-        "1",
-        "-vf",
-        "scale=320:180:force_original_aspect_ratio=decrease,pad=320:180:(ow-iw)/2:(oh-ih)/2",
-        "-q:v",
-        "5",
-    ])
-    .arg(&tmp);
+    ]);
+    if m.kind == MediaKind::Audio {
+        // A waveform picture for sound files.
+        c.arg("-i").arg(&m.path).args([
+            "-filter_complex",
+            "aformat=channel_layouts=mono,showwavespic=s=800x120:colors=0x5fd3bc",
+            "-frames:v",
+            "1",
+        ]);
+    } else {
+        let at = (m.duration * 0.1).min(3.0);
+        c.args(["-ss", &format!("{at:.3}"), "-i"])
+            .arg(&m.path)
+            .args([
+                "-map",
+                "0:V:0",
+                "-frames:v",
+                "1",
+                "-vf",
+                "scale=320:180:force_original_aspect_ratio=decrease,pad=320:180:(ow-iw)/2:(oh-ih)/2",
+                "-q:v",
+                "5",
+            ]);
+    }
+    c.arg(&tmp);
     let never = AtomicBool::new(false);
     let result = run(c, &never);
     if result.is_err() || !tmp.is_file() {
@@ -475,6 +507,239 @@ pub fn audio_filter(volume: f64, len: f64, fade_in: f64, fade_out: f64) -> Strin
     af
 }
 
+/// One clip's slot in the rendered sequence.
+pub struct Segment {
+    /// Timeline time where the clip starts.
+    pub start: f64,
+    pub len: f64,
+    pub source_in: f64,
+    pub volume: f64,
+    pub fade_in: f64,
+    pub fade_out: f64,
+    pub has_audio: bool,
+}
+
+/// The part of a music item that plays during one segment.
+pub struct MusicSlice {
+    pub path: String,
+    /// Where to start reading the sound file, in seconds.
+    pub source_offset: f64,
+    pub duration: f64,
+    /// Delay from the start of the segment.
+    pub local_start: f64,
+    /// Timeline time of the slice's first sample.
+    pub timeline_start: f64,
+    pub music: Music,
+}
+
+pub fn music_slices(p: &Project, seg_start: f64, seg_len: f64) -> Vec<MusicSlice> {
+    let seg_end = seg_start + seg_len;
+    p.music
+        .iter()
+        .filter_map(|mu| {
+            let media = p.media.iter().find(|m| m.id == mu.media_id)?;
+            let a = mu.start.max(seg_start);
+            let b = mu.end().min(seg_end);
+            if b - a < 1e-3 {
+                return None;
+            }
+            Some(MusicSlice {
+                path: media.path.clone(),
+                source_offset: mu.r#in + (a - mu.start),
+                duration: b - a,
+                local_start: a - seg_start,
+                timeline_start: a,
+                music: mu.clone(),
+            })
+        })
+        .collect()
+}
+
+fn num(v: f64) -> String {
+    format!("{v:.4}")
+}
+
+/// Gain expression for a music slice: its volume shaped by its fades, with
+/// `t` running from 0 at the slice's first sample.
+pub fn music_gain(sl: &MusicSlice) -> String {
+    let m = &sl.music;
+    let g = format!("({}+t)", num(sl.timeline_start));
+    let mut terms = vec!["1".to_string()];
+    if m.fade_in > 0.0 {
+        terms.push(format!("({g}-{})/{}", num(m.start), num(m.fade_in)));
+    }
+    if m.fade_out > 0.0 {
+        terms.push(format!("({}-{g})/{}", num(m.end()), num(m.fade_out)));
+    }
+    let shape = terms
+        .into_iter()
+        .reduce(|a, b| format!("min({a},{b})"))
+        .unwrap_or_else(|| "1".into());
+    format!("{}*clip({shape},0,1)", num(m.volume))
+}
+
+pub struct TitleFile {
+    pub title: Title,
+    pub text_file: String,
+    pub font_file: String,
+}
+
+fn has_devanagari(text: &str) -> bool {
+    text.chars().any(|c| ('\u{0900}'..='\u{097F}').contains(&c))
+}
+
+/// Finds a font for titles: `EDITNOVA_FONT` if set, then Windows' Segoe UI
+/// (or Nirmala UI for Devanagari/Nepali text), then common Linux fonts.
+pub fn find_font(devanagari: bool) -> Option<PathBuf> {
+    if let Some(f) = std::env::var_os("EDITNOVA_FONT").map(PathBuf::from) {
+        if f.is_file() {
+            return Some(f);
+        }
+    }
+    let windir = std::env::var_os("WINDIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
+        .join("Fonts");
+    let windows: &[&str] = if devanagari {
+        &["NirmalaB.ttf", "Nirmala.ttc", "Nirmala.ttf", "mangal.ttf"]
+    } else {
+        &["segoeuib.ttf", "arialbd.ttf", "segoeui.ttf", "arial.ttf"]
+    };
+    let unix: &[&str] = if devanagari {
+        &[
+            "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Bold.ttf",
+            "/usr/share/fonts/truetype/lohit-devanagari/Lohit-Devanagari.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        ]
+    } else {
+        &[
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+            "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+        ]
+    };
+    windows
+        .iter()
+        .map(|f| windir.join(f))
+        .chain(unix.iter().map(PathBuf::from))
+        .find(|p| p.is_file())
+}
+
+/// Writes each title that appears in this segment to its own text file (so
+/// no text ever needs escaping) and copies the font beside it.
+fn title_files(
+    p: &Project,
+    seg: &Segment,
+    dir: &Path,
+    index: usize,
+) -> Result<Vec<TitleFile>, String> {
+    let mut out = Vec::new();
+    for (k, t) in p.titles.iter().enumerate() {
+        if t.start + t.duration <= seg.start + 1e-4 || t.start >= seg.start + seg.len - 1e-4 {
+            continue;
+        }
+        let dev = has_devanagari(&t.text);
+        let font = find_font(dev).ok_or(
+            "No font for titles was found. Set EDITNOVA_FONT to a .ttf file and try again.",
+        )?;
+        let font_ext = font
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("ttf")
+            .to_lowercase();
+        let font_file = format!("font-{}.{font_ext}", if dev { "dev" } else { "latin" });
+        if !dir.join(&font_file).is_file() {
+            std::fs::copy(&font, dir.join(&font_file)).map_err(|e| e.to_string())?;
+        }
+        let text_file = format!("title-{index}-{k}.txt");
+        std::fs::write(dir.join(&text_file), t.text.as_bytes()).map_err(|e| e.to_string())?;
+        out.push(TitleFile {
+            title: t.clone(),
+            text_file,
+            font_file,
+        });
+    }
+    Ok(out)
+}
+
+pub fn drawtext(p: &Project, seg_start: f64, tf: &TitleFile) -> String {
+    let t = &tf.title;
+    let size = (p.height as f64 * t.size.fraction()).round().max(8.0);
+    let s = t.start - seg_start;
+    let e = s + t.duration;
+    let f = (t.duration / 3.0).min(0.3);
+    let y = match t.placement {
+        Placement::Top => "h*0.08".to_string(),
+        Placement::Center => "(h-text_h)/2".to_string(),
+        Placement::Bottom => "h*0.92-text_h".to_string(),
+    };
+    let look = if t.backdrop {
+        format!(
+            ":box=1:boxcolor=black@0.55:boxborderw={}",
+            (size * 0.35).round()
+        )
+    } else {
+        ":shadowcolor=black@0.7:shadowx=2:shadowy=2".to_string()
+    };
+    format!(
+        "drawtext=fontfile={font}:textfile={text}:expansion=none:fontsize={size}:fontcolor=0x{color}:x=(w-text_w)/2:y={y}{look}:alpha='if(lt(t,{s}+{f}),max(0,(t-{s})/{f}),if(gt(t,{e}-{f}),max(0,({e}-t)/{f}),1))':enable='between(t,{s},{e})'",
+        font = tf.font_file,
+        text = tf.text_file,
+        color = &t.color[1..],
+        s = num(s),
+        e = num(e),
+        f = num(f),
+    )
+}
+
+/// Builds the complete filter graph for one segment: the clip's picture with
+/// fades and titles as `[v]`, and its sound mixed with any music as `[a]`.
+pub fn segment_graph(
+    p: &Project,
+    seg: &Segment,
+    titles: &[TitleFile],
+    slices: &[MusicSlice],
+) -> String {
+    let mut v = video_filter(p, seg.len, seg.fade_in, seg.fade_out);
+    for tf in titles {
+        v.push(',');
+        v.push_str(&drawtext(p, seg.start, tf));
+    }
+    let base_in = if seg.has_audio { "0:a:0" } else { "1:a:0" };
+    let af = audio_filter(seg.volume, seg.len, seg.fade_in, seg.fade_out);
+    let mut g = format!(
+        "[0:V:0]{v}[v];[{base_in}]{af},aformat=sample_fmts=fltp:channel_layouts=stereo[ca]"
+    );
+    if slices.is_empty() {
+        g.push_str(";[ca]anull[a]");
+        return g;
+    }
+    let first = if seg.has_audio { 1 } else { 2 };
+    for (k, sl) in slices.iter().enumerate() {
+        let delay = (sl.local_start * 1000.0).round() as u64;
+        g.push_str(&format!(
+            ";[{inp}:a:0]asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,volume='{gain}':eval=frame,adelay={delay}|{delay}[m{k}]",
+            inp = first + k,
+            gain = music_gain(sl),
+        ));
+    }
+    if slices.len() == 1 {
+        g.push_str(";[m0]anull[mm]");
+    } else {
+        let labels: String = (0..slices.len()).map(|k| format!("[m{k}]")).collect();
+        g.push_str(&format!(
+            ";{labels}amix=inputs={}:duration=longest:normalize=0[mm]",
+            slices.len()
+        ));
+    }
+    if p.duck_music && seg.has_audio && seg.volume > 0.0 {
+        g.push_str(";[ca]asplit=2[cb][sc];[mm][sc]sidechaincompress=threshold=0.02:ratio=8:attack=20:release=400[md];[cb][md]amix=inputs=2:duration=first:normalize=0[a]");
+    } else {
+        g.push_str(";[ca][mm]amix=inputs=2:duration=first:normalize=0[a]");
+    }
+    g
+}
+
 pub fn render(
     p: &Project,
     target: &Path,
@@ -539,8 +804,18 @@ pub fn render_with(
         progress(0.9 * done / total, stage.clone());
         let output = dir.path().join(format!("seg{i}.mp4"));
         let _ = std::fs::remove_file(&report);
+        let seg = Segment {
+            start: done,
+            len,
+            source_in: clip.r#in,
+            volume: clip.volume,
+            fade_in: clip.fade_in,
+            fade_out: clip.fade_out,
+            has_audio: actual.audio,
+        };
+        let slices = music_slices(p, seg.start, seg.len);
         let mut c = command("ffmpeg");
-        c.args([
+        c.current_dir(dir.path()).args([
             "-hide_banner",
             "-loglevel",
             "error",
@@ -562,21 +837,31 @@ pub fn render_with(
                 "anullsrc=channel_layout=stereo:sample_rate=48000",
             ]);
         }
+        for sl in &slices {
+            c.args([
+                "-ss",
+                &format!("{:.6}", sl.source_offset),
+                "-t",
+                &format!("{:.6}", sl.duration),
+                "-i",
+            ])
+            .arg(&sl.path);
+        }
+        let titles = title_files(p, &seg, dir.path(), i)?;
+        let graph = segment_graph(p, &seg, &titles, &slices);
         c.args([
+            "-filter_complex",
+            &graph,
             "-map",
-            "0:V:0",
+            "[v]",
             "-map",
-            if actual.audio { "0:a:0" } else { "1:a:0" },
+            "[a]",
             "-t",
             &format!("{len:.6}"),
             // An exact frame count keeps every segment, and so the joined
             // video, precisely as long as the timeline says.
             "-frames:v",
             &frame_count(len, p.fps).to_string(),
-            "-vf",
-            &video_filter(p, len, clip.fade_in, clip.fade_out),
-            "-af",
-            &audio_filter(clip.volume, len, clip.fade_in, clip.fade_out),
             "-pix_fmt",
             "yuv420p",
         ])
@@ -665,6 +950,44 @@ mod tests {
         let unc = PathBuf::from(r"\\?\UNC\server\share\a.mp4");
         assert_eq!(simplify(unc.clone()), unc);
         assert_eq!(simplify(PathBuf::from("/tmp/a.mp4")), PathBuf::from("/tmp/a.mp4"));
+    }
+    #[test]
+    fn music_slices_cover_only_the_overlap() {
+        let mut p = Project::new("m", 320, 180, 30);
+        p.media.push(Media {
+            id: "s".into(),
+            path: "song.mp3".into(),
+            name: "song.mp3".into(),
+            duration: 60.0,
+            width: 0,
+            height: 0,
+            audio: true,
+            kind: MediaKind::Audio,
+        });
+        p.music.push(Music {
+            id: "mu".into(),
+            media_id: "s".into(),
+            start: 2.0,
+            r#in: 10.0,
+            out: 16.0,
+            volume: 0.5,
+            fade_in: 1.0,
+            fade_out: 0.0,
+        });
+        assert!(music_slices(&p, 0.0, 2.0).is_empty());
+        let a = &music_slices(&p, 0.0, 3.0)[0];
+        assert_eq!((a.source_offset, a.duration, a.local_start), (10.0, 1.0, 2.0));
+        let b = &music_slices(&p, 3.0, 10.0)[0];
+        assert_eq!((b.source_offset, b.duration, b.local_start), (11.0, 5.0, 0.0));
+        assert_eq!(
+            music_gain(b),
+            "0.5000*clip(min(1,((3.0000+t)-2.0000)/1.0000),0,1)"
+        );
+    }
+    #[test]
+    fn devanagari_is_detected() {
+        assert!(has_devanagari("नमस्ते"));
+        assert!(!has_devanagari("Hello"));
     }
     #[test]
     fn frame_count_rounds_to_whole_frames() {

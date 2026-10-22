@@ -18,7 +18,7 @@ The installer includes the FFmpeg video engine, needs no administrator rights,
 and installs Microsoft WebView2 automatically if your PC lacks it.
 Uninstall from **Settings → Apps**.
 
-## Features (v1.0)
+## Features (v1.1)
 
 - Import MP4, MOV, MKV, WebM, AVI, M4V with the Import button or by dropping
   files on the window. Poster thumbnails in the media list and timeline.
@@ -26,6 +26,12 @@ Uninstall from **Settings → Apps**.
   to playhead (`Q`/`W`), duplicate, delete, undo/redo (100 steps), zoom and fit.
 - Per-clip volume (0–200 %, mute) and fade in/out from black, previewed live
   and rendered identically in the export.
+- Titles (`T`): one-line text at top, middle or bottom, three sizes, any
+  colour, optional dark box, smooth fades, Nepali/Devanagari supported. Titles
+  can span clips and are dragged along their own lane.
+- Music track (`M`): MP3, WAV, M4A, AAC, OGG, FLAC, Opus. Drag along the
+  timeline, skip the intro, volume and fades, waveform display, and automatic
+  ducking under clip sound.
 - Export: Best / Balanced / Smaller presets, 1080p, 720p, 4K, vertical 9:16,
   square and 4:5. NVIDIA NVENC GPU encoding when available, CPU x264 otherwise.
   Real progress with time remaining, cancel, full decode check before saving,
@@ -87,6 +93,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --locked
 | ← / → (Shift for 1 s) | Step one frame |
 | Home / End | Start / end |
 | S | Split at playhead |
+| T / M | Add title / add music at playhead |
 | Q / W | Trim clip start / end to playhead |
 | Delete | Remove selected clip |
 | Ctrl+D | Duplicate clip |

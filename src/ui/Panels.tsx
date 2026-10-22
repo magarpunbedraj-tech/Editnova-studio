@@ -12,7 +12,7 @@ export function MediaBin(props: {
   onRemove: (m: Media) => void;
 }) {
   const { p, thumbs } = props;
-  const used = new Set(p.clips.map((c) => c.mediaId));
+  const used = new Set([...p.clips.map((c) => c.mediaId), ...p.music.map((u) => u.mediaId)]);
   return (
     <aside className="bin panel">
       <div className="panel-head">
@@ -20,14 +20,14 @@ export function MediaBin(props: {
         <span className="count">{p.media.length}</span>
       </div>
       <button className="import" disabled={props.busy} onClick={props.onImport}>
-        <b>Import videos</b>
+        <b>Import videos or music</b>
         <small>or drop files anywhere in the window</small>
       </button>
       <div className="bin-list">
         {!p.media.length ? (
           <p className="bin-empty">
-            MP4, MOV, MKV, WebM, AVI and M4V files work. Your originals are never
-            changed.
+            Videos (MP4, MOV, MKV, WebM, AVI) and music (MP3, WAV, M4A, OGG,
+            FLAC) work. Your originals are never changed.
           </p>
         ) : (
           p.media.map((m) => (
@@ -38,7 +38,7 @@ export function MediaBin(props: {
               title={m.path}
             >
               <div
-                className="poster"
+                className={`poster ${m.kind === "audio" ? "wave" : ""}`}
                 style={{
                   backgroundImage: thumbs[m.id] ? `url("${thumbs[m.id]}")` : undefined,
                 }}
@@ -48,16 +48,20 @@ export function MediaBin(props: {
               <div className="asset-meta">
                 <strong>{m.name}</strong>
                 <small>
-                  {m.width}×{m.height}
-                  {m.audio ? "" : ", no sound"}
-                  {used.has(m.id) ? ", in timeline" : ""}
+                  {m.kind === "audio" ? "Music or sound" : `${m.width}×${m.height}`}
+                  {m.kind !== "audio" && !m.audio ? ", no sound" : ""}
+                  {used.has(m.id) ? ", in use" : ""}
                 </small>
               </div>
               <div className="asset-actions">
                 <button
                   className="add"
                   disabled={props.busy}
-                  title="Add to the end of the timeline"
+                  title={
+                    m.kind === "audio"
+                      ? "Add to the music track at the playhead"
+                      : "Add to the end of the timeline"
+                  }
                   onClick={() => props.onAdd(m)}
                 >
                   Add
@@ -331,6 +335,14 @@ export function Inspector(props: {
                   ))}
                 </select>
               </label>
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={p.duckMusic}
+                  onChange={(e) => props.onProject({ ...p, duckMusic: e.target.checked })}
+                />
+                Lower music while clips have sound
+              </label>
               <p className="hint">
                 Videos with a different shape are fitted inside the frame with black
                 bars, never stretched or cropped.
@@ -343,7 +355,11 @@ export function Inspector(props: {
                 <li>Drag clips along the timeline to reorder them.</li>
                 <li>
                   Press <kbd>S</kbd> to split at the playhead, <kbd>Delete</kbd> to
-                  remove the selected clip.
+                  remove the selected item.
+                </li>
+                <li>
+                  Press <kbd>T</kbd> to add a title at the playhead, <kbd>M</kbd> to add
+                  music.
                 </li>
                 <li>
                   Press <kbd>?</kbd> for every shortcut.

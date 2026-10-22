@@ -66,15 +66,7 @@ fn write_recent(list: &Path, items: &[String]) -> Result<(), String> {
 mod tests {
     use super::*;
     fn project() -> Project {
-        Project {
-            version: crate::model::CURRENT_VERSION,
-            name: "कथा".into(),
-            width: 1920,
-            height: 1080,
-            fps: 30,
-            media: vec![],
-            clips: vec![],
-        }
+        Project::new("कथा", 1920, 1080, 30)
     }
     #[test]
     fn recovery_roundtrip_and_replace() {

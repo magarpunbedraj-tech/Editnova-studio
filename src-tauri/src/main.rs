@@ -1,6 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 use editnova_studio::{
-    media::{self, ExportOptions, Quality, VIDEO_EXTENSIONS},
+    media::{self, ExportOptions, Quality, AUDIO_EXTENSIONS, VIDEO_EXTENSIONS},
     model,
     persistence::{atomic_save, load, load_recent, push_recent, remove_recent},
 };
@@ -73,8 +73,19 @@ async fn worker<T: Send + 'static>(
         .map_err(|e| e.to_string())?
 }
 
-fn video_dialog() -> rfd::FileDialog {
-    rfd::FileDialog::new().add_filter("Video", &VIDEO_EXTENSIONS)
+fn media_dialog(sound_only: bool) -> rfd::FileDialog {
+    if sound_only {
+        return rfd::FileDialog::new().add_filter("Music and sound", &AUDIO_EXTENSIONS);
+    }
+    let all: Vec<&str> = VIDEO_EXTENSIONS
+        .iter()
+        .chain(AUDIO_EXTENSIONS.iter())
+        .copied()
+        .collect();
+    rfd::FileDialog::new()
+        .add_filter("Video and sound", &all)
+        .add_filter("Video", &VIDEO_EXTENSIONS)
+        .add_filter("Music and sound", &AUDIO_EXTENSIONS)
 }
 
 fn project_dialog() -> rfd::FileDialog {
@@ -126,11 +137,14 @@ fn remember_project(app: &tauri::AppHandle, s: &Shared, path: &str) {
 #[tauri::command]
 async fn import_media(
     app: tauri::AppHandle,
+    sound_only: Option<bool>,
     state: tauri::State<'_, Arc<Shared>>,
 ) -> Result<Vec<Media>, String> {
     let s = state.inner().clone();
     worker(move || {
-        let paths = video_dialog().pick_files().unwrap_or_default();
+        let paths = media_dialog(sound_only.unwrap_or(false))
+            .pick_files()
+            .unwrap_or_default();
         let mut items = Vec::new();
         for path in paths {
             let m = media::probe(&path)?;
@@ -149,7 +163,7 @@ async fn relink(
 ) -> Result<Option<Media>, String> {
     let s = state.inner().clone();
     worker(move || {
-        if let Some(path) = video_dialog().pick_file() {
+        if let Some(path) = media_dialog(false).pick_file() {
             let m = media::probe(&path)?;
             authorize(&app, &s, &m)?;
             Ok(Some(m))
@@ -466,15 +480,10 @@ async fn prepare_preview(
                 .min(1.0);
             let width = ((actual.width as f64 * factor / 2.0).round() as u32 * 2).max(16);
             let height = ((actual.height as f64 * factor / 2.0).round() as u32 * 2).max(16);
-            let p = Project {
-                version: model::CURRENT_VERSION,
-                name: "Preview".into(),
-                width,
-                height,
-                fps: 30,
-                clips: vec![model::Clip::new("preview", &actual.id, 0.0, actual.duration)],
-                media: vec![actual],
-            };
+            let mut p = Project::new("Preview", width, height, 30);
+            p.clips
+                .push(model::Clip::new("preview", &actual.id, 0.0, actual.duration));
+            p.media.push(actual);
             media::render_with(
                 &p,
                 &path,

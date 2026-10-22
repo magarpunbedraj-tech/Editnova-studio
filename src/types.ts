@@ -6,6 +6,8 @@ export interface Media {
   width: number;
   height: number;
   audio: boolean;
+  /** "audio" for sound files (music); videos may omit it. */
+  kind?: "video" | "audio";
 }
 export interface Clip {
   id: string;
@@ -25,6 +27,30 @@ export interface Project {
   fps: number;
   media: Media[];
   clips: Clip[];
+  titles: Title[];
+  music: Music[];
+  /** Lower the music while clips have sound. */
+  duckMusic: boolean;
+}
+export interface Title {
+  id: string;
+  text: string;
+  start: number;
+  duration: number;
+  placement: "top" | "center" | "bottom";
+  size: "small" | "medium" | "large";
+  color: string;
+  backdrop: boolean;
+}
+export interface Music {
+  id: string;
+  mediaId: string;
+  start: number;
+  in: number;
+  out: number;
+  volume: number;
+  fadeIn: number;
+  fadeOut: number;
 }
 export interface Loaded {
   project: Project;

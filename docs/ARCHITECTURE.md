@@ -23,7 +23,7 @@ persistence are tested without the GUI. Blocking work runs on Tauri's worker
 pool; progress events stream to React; an atomic flag cancels jobs; a busy
 guard prevents overlapping media jobs.
 
-## Document model (version 2)
+## Document model (version 3)
 
 `name`, output `width`, `height`, `fps`, `media[]`, ordered `clips[]`.
 Media: UUID, absolute path, name, duration, dimensions, audio flag.
@@ -31,8 +31,15 @@ Clip: UUID, media UUID, source `in`/`out` seconds, `volume` (0–2 linear),
 `fadeIn`/`fadeOut` seconds (each ≤ 10 s, together ≤ clip length).
 Sequence times are cumulative clip lengths: no gaps, no overlaps.
 
-Version 1 files (EditNova 0.1) are upgraded on load by adding `volume: 1` and
-zero fades; the next save writes version 2. Unknown versions are rejected.
+Version 3 adds `titles[]` (text, start, duration, placement, size, `#rrggbb`
+color, backdrop), `music[]` (media UUID, timeline start, source in/out,
+volume, fades) and `duckMusic`. Media gain `kind` (`video` or `audio`); only
+video media may be clips, and music needs media with sound. IDs are unique
+across clips, titles and music.
+
+Version 1 and 2 files are upgraded on load (default volume and fades, empty
+titles and music); the next save writes version 3. Unknown versions are
+rejected.
 JavaScript (`engine.mjs`) and Rust (`model.rs`) enforce identical rules.
 
 ## Rendering
@@ -45,6 +52,18 @@ applied after `apad` so they also cover padded audio. Segments are joined with
 the concat demuxer (stream copy), probed for duration and fully decoded with
 `-xerror` before the result is copied beside the target and published with a
 no-clobber rename. Existing files are never overwritten.
+
+Titles and music are rendered inside each clip's segment, so there is still
+one encode per clip. For segment *i* starting at timeline time *a*, every
+title overlapping it becomes a `drawtext` filter whose `enable` window and
+alpha fade use times relative to *a*; a title crossing a cut is drawn by both
+segments and joins seamlessly. Title text is written to a file (`textfile=`,
+`expansion=none`), so no user text is ever escaped into the filter graph. Each
+overlapping music item is opened with `-ss/-t` for just its slice, shaped by a
+`volume` expression that reproduces its fades in timeline time, delayed with
+`adelay`, and mixed in with `amix normalize=0`. With ducking on and a clip that
+has sound, the music passes through `sidechaincompress` keyed by the clip's
+audio.
 
 Encoders: `libx264` (Best: medium/CRF 18, Balanced: faster/CRF 21, Smaller:
 faster/CRF 26) or `h264_nvenc` (p5, VBR CQ 19/23/28) when the user enables it

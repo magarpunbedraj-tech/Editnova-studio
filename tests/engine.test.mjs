@@ -22,6 +22,17 @@ import {
   removeMedia,
   starts,
   makeClip,
+  makeTitle,
+  addTitle,
+  updateTitle,
+  titlesAt,
+  titleAlpha,
+  makeMusic,
+  addMusic,
+  updateMusic,
+  musicAt,
+  musicGain,
+  removeItem,
 } from "../src/engine.mjs";
 const sample = () => ({
   ...fresh(),
@@ -104,15 +115,21 @@ test("history is bounded to 100 operations", () => {
 });
 
 test("version 1 projects migrate with default audio settings", () => {
-  const old = { ...sample(), version: 1 };
+  const { titles, music, duckMusic, ...old } = { ...sample(), version: 1 };
   old.clips = old.clips.map(({ id, mediaId, in: a, out: b }) => ({ id, mediaId, in: a, out: b }));
   const p = validate(migrate(old));
-  assert.equal(p.version, 2);
+  assert.equal(p.version, 3);
+  assert.deepEqual([p.titles, p.music, p.duckMusic], [[], [], false]);
   assert.deepEqual(
     [p.clips[0].volume, p.clips[0].fadeIn, p.clips[0].fadeOut],
     [1, 0, 0],
   );
-  assert.equal(migrate(sample()).version, 2);
+  assert.equal(migrate(sample()).version, 3);
+  const v2 = { ...sample(), version: 2 };
+  delete v2.titles;
+  delete v2.music;
+  delete v2.duckMusic;
+  assert.equal(validate(migrate(v2)).titles.length, 0);
 });
 test("moveTo places a clip at the requested index", () => {
   let p = sample();
@@ -169,4 +186,37 @@ test("unused media can be removed, used media cannot", () => {
 test("makeClip covers the whole source by default", () => {
   const c = makeClip("x", { id: "m", duration: 10 });
   assert.deepEqual([c.in, c.out, c.volume], [0, 10, 1]);
+});
+
+const song = { id: "s", path: "C:\\Music\\song.mp3", name: "song.mp3", duration: 30, width: 0, height: 0, audio: true, kind: "audio" };
+test("titles: add, edit, find and fade", () => {
+  let p = addTitle(sample(), makeTitle("t", 1));
+  p = updateTitle(p, "t", { text: "नमस्ते\nPokhara", placement: "top", size: "large" });
+  assert.equal(p.titles[0].text, "नमस्ते Pokhara");
+  assert.equal(titlesAt(p, 2).length, 1);
+  assert.equal(titlesAt(p, 4).length, 0);
+  assert.equal(titleAlpha(p.titles[0], 1), 0);
+  assert.equal(titleAlpha(p.titles[0], 2.5), 1);
+  assert.ok(Math.abs(titleAlpha(p.titles[0], 3.85) - 0.5) < 1e-9);
+  assert.throws(() => updateTitle(p, "t", { text: "" }));
+  assert.throws(() => updateTitle(p, "t", { color: "white" }));
+  assert.equal(updateTitle(p, "t", { text: "x".repeat(200) }).titles[0].text.length, 80);
+  assert.equal(removeItem(p, "t").titles.length, 0);
+});
+test("music: fits the timeline, plays, fades and validates", () => {
+  let p = { ...sample(), media: [...sample().media, song] };
+  const u = makeMusic("u", song, 2, 7);
+  assert.deepEqual([u.start, u.in, u.out], [2, 0, 5]);
+  p = addMusic(p, u);
+  assert.equal(musicAt(p, 1), null);
+  assert.equal(musicAt(p, 3).id, "u");
+  assert.equal(musicGain(p.music[0], 2), 0);
+  assert.equal(musicGain(p.music[0], 4), 0.6);
+  assert.equal(updateMusic(p, "u", { volume: 9 }).music[0].volume, 2);
+  assert.throws(() => updateMusic(p, "u", { out: 40 }));
+  const q = updateMusic(p, "u", { in: 0, out: 1 });
+  assert.ok(q.music[0].fadeIn + q.music[0].fadeOut <= 1 + 1e-6);
+  assert.throws(() => removeMedia(p, "s"));
+  assert.throws(() => validate({ ...p, clips: [...p.clips, makeClip("bad", song)] }));
+  assert.throws(() => validate({ ...p, titles: [makeTitle("u", 0)] }), "ids are unique");
 });

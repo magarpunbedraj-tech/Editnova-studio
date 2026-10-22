@@ -1,6 +1,8 @@
 // Pure timeline operations. Every function returns a new project and never
 // mutates its input. Rules here mirror src-tauri/src/model.rs exactly.
-export const VERSION = 2;
+export const VERSION = 3;
+export const MAX_TITLE = 80;
+export const COLORS = ["#ffffff", "#ffd84a", "#ff6b6b", "#7cf0c5", "#9fd0ff", "#111111"];
 export const FPS = [24, 25, 30, 60];
 export const MAX_FADE = 10;
 export const MAX_VOLUME = 2;
@@ -13,6 +15,9 @@ export const fresh = () => ({
   fps: 30,
   media: [],
   clips: [],
+  titles: [],
+  music: [],
+  duckMusic: true,
 });
 
 export const clipLength = (c) => c.out - c.in;
@@ -22,16 +27,21 @@ export function makeClip(id, media, a = 0, b = media.duration) {
   return { id, mediaId: media.id, in: a, out: b, volume: 1, fadeIn: 0, fadeOut: 0 };
 }
 
-/** Upgrades an older supported project (version 1) to the current format. */
+/** Upgrades an older supported project (version 1 or 2) to the current format. */
 export function migrate(p) {
   if (!p || typeof p !== "object") throw Error("Not an EditNova project");
-  if (p.version !== 1) return p;
+  if (p.version !== 1 && p.version !== 2) return p;
   return {
     ...p,
     version: VERSION,
     clips: (p.clips || []).map((c) => ({ volume: 1, fadeIn: 0, fadeOut: 0, ...c })),
+    titles: p.titles || [],
+    music: p.music || [],
+    duckMusic: p.duckMusic ?? false,
   };
 }
+
+const isAudio = (m) => m && m.kind === "audio";
 
 export function locate(p, time) {
   let start = 0;
@@ -105,18 +115,66 @@ export function validate(p) {
       throw Error("Clip in and out points must stay inside the source video");
     if (!Number.isFinite(c.volume) || c.volume < 0 || c.volume > MAX_VOLUME)
       throw Error("Clip volume must be between 0% and 200%");
-    if (
-      ![c.fadeIn, c.fadeOut].every(Number.isFinite) ||
-      c.fadeIn < 0 ||
-      c.fadeOut < 0 ||
-      c.fadeIn > MAX_FADE ||
-      c.fadeOut > MAX_FADE ||
-      c.fadeIn + c.fadeOut > clipLength(c) + 1e-6
-    )
-      throw Error("Fades must fit inside the clip");
+    if (isAudio(m)) throw Error("Only videos can go on the video track");
+    checkFades(c.fadeIn, c.fadeOut, clipLength(c));
     clips.add(c.id);
   }
+  if (!Array.isArray(p.titles) || !Array.isArray(p.music) || p.titles.length > 500 || p.music.length > 500)
+    throw Error("Invalid project");
+  for (const t of p.titles) {
+    const n = [...(t.text || "")].length;
+    if (
+      !t.id ||
+      clips.has(t.id) ||
+      !n ||
+      n > MAX_TITLE ||
+      /[\r\n]/.test(t.text) ||
+      ![t.start, t.duration].every(Number.isFinite) ||
+      t.start < 0 ||
+      t.start > 36000 ||
+      t.duration < 0.25 ||
+      t.duration > 3600 ||
+      !["top", "center", "bottom"].includes(t.placement) ||
+      !["small", "medium", "large"].includes(t.size) ||
+      !/^#[0-9a-fA-F]{6}$/.test(t.color) ||
+      typeof t.backdrop !== "boolean"
+    )
+      throw Error("Each title needs 1 to 80 characters on one line, a start time and at least 0.25 s on screen");
+    clips.add(t.id);
+  }
+  for (const u of p.music) {
+    const m = p.media.find((m) => m.id === u.mediaId);
+    if (
+      !m ||
+      !m.audio ||
+      !u.id ||
+      clips.has(u.id) ||
+      ![u.start, u.in, u.out].every(Number.isFinite) ||
+      u.start < 0 ||
+      u.start > 36000 ||
+      u.in < 0 ||
+      u.out - u.in < 0.1 ||
+      u.out > m.duration + 0.05
+    )
+      throw Error("Music must use a file with sound and stay inside it");
+    if (!Number.isFinite(u.volume) || u.volume < 0 || u.volume > MAX_VOLUME)
+      throw Error("Music volume must be between 0% and 200%");
+    checkFades(u.fadeIn, u.fadeOut, u.out - u.in);
+    clips.add(u.id);
+  }
   return p;
+}
+
+function checkFades(a, b, len) {
+  if (
+    ![a, b].every(Number.isFinite) ||
+    a < 0 ||
+    b < 0 ||
+    a > MAX_FADE ||
+    b > MAX_FADE ||
+    a + b > len + 1e-6
+  )
+    throw Error(`Fades here can total at most ${len.toFixed(2)} s`);
 }
 
 function withClip(p, id, fn) {
@@ -223,10 +281,10 @@ export function setFades(p, id, fadeIn, fadeOut) {
   });
 }
 
-/** Removes media that no clip uses. */
+/** Removes media that no clip or music item uses. */
 export function removeMedia(p, mediaId) {
-  if (p.clips.some((c) => c.mediaId === mediaId))
-    throw Error("Remove this video's clips from the timeline first");
+  if (p.clips.some((c) => c.mediaId === mediaId) || p.music.some((u) => u.mediaId === mediaId))
+    throw Error("Remove this file from the timeline first");
   return { ...p, media: p.media.filter((m) => m.id !== mediaId) };
 }
 
@@ -241,6 +299,95 @@ export function envelope(c, offset) {
   if (c.fadeOut > 0 && offset > len - c.fadeOut)
     k = Math.min(k, (len - offset) / c.fadeOut);
   return Math.max(0, Math.min(1, k));
+}
+
+// ----- Titles -----
+export function makeTitle(id, start, text = "Your title") {
+  return {
+    id,
+    text,
+    start: Math.max(0, start),
+    duration: 3,
+    placement: "bottom",
+    size: "medium",
+    color: "#ffffff",
+    backdrop: true,
+  };
+}
+export function addTitle(p, t) {
+  return validate({ ...p, titles: [...p.titles, t] });
+}
+export function updateTitle(p, id, patch) {
+  if (!p.titles.some((t) => t.id === id)) throw Error("Select a title first");
+  const next = { ...patch };
+  if ("text" in next) next.text = String(next.text).replace(/[\r\n]+/g, " ").slice(0, MAX_TITLE);
+  if ("start" in next) next.start = Math.max(0, next.start);
+  return validate({ ...p, titles: p.titles.map((t) => (t.id === id ? { ...t, ...next } : t)) });
+}
+/** Titles visible at a timeline time. */
+export const titlesAt = (p, time) =>
+  p.titles.filter((t) => time >= t.start && time < t.start + t.duration);
+/** Opacity of a title at a timeline time, matching the export's 0.3 s fade. */
+export function titleAlpha(t, time) {
+  const f = Math.min(0.3, t.duration / 3),
+    s = t.start,
+    e = t.start + t.duration;
+  if (time < s || time >= e) return 0;
+  return Math.max(0, Math.min(1, (time - s) / f, (e - time) / f));
+}
+
+// ----- Music -----
+export const musicEnd = (u) => u.start + u.out - u.in;
+export function makeMusic(id, media, start, total) {
+  const room = total > start + 1 ? total - start : media.duration;
+  const out = Math.min(media.duration, room);
+  return {
+    id,
+    mediaId: media.id,
+    start: Math.max(0, start),
+    in: 0,
+    out,
+    volume: 0.6,
+    fadeIn: Math.min(1, out / 4),
+    fadeOut: Math.min(2, out / 4),
+  };
+}
+export function addMusic(p, u) {
+  return validate({ ...p, music: [...p.music, u] });
+}
+export function updateMusic(p, id, patch) {
+  const cur = p.music.find((u) => u.id === id);
+  if (!cur) throw Error("Select a music item first");
+  const next = { ...cur, ...patch };
+  next.start = Math.max(0, next.start);
+  next.volume = Math.round(Math.min(MAX_VOLUME, Math.max(0, next.volume)) * 100) / 100;
+  const len = next.out - next.in;
+  if (next.fadeIn + next.fadeOut > len) {
+    const k = len / (next.fadeIn + next.fadeOut);
+    next.fadeIn = +(next.fadeIn * k).toFixed(3);
+    next.fadeOut = Math.max(0, +(len - next.fadeIn - 1e-4).toFixed(3));
+  }
+  return validate({ ...p, music: p.music.map((u) => (u.id === id ? next : u)) });
+}
+/** The music item playing at a timeline time, if any (the first one wins). */
+export const musicAt = (p, time) =>
+  p.music.find((u) => time >= u.start && time < musicEnd(u)) || null;
+/** Gain of a music item at a timeline time, matching the export. */
+export function musicGain(u, time) {
+  let k = 1;
+  if (u.fadeIn > 0) k = Math.min(k, (time - u.start) / u.fadeIn);
+  if (u.fadeOut > 0) k = Math.min(k, (musicEnd(u) - time) / u.fadeOut);
+  return u.volume * Math.max(0, Math.min(1, k));
+}
+
+/** Removes a clip, title or music item by id. */
+export function removeItem(p, id) {
+  return {
+    ...p,
+    clips: p.clips.filter((c) => c.id !== id),
+    titles: p.titles.filter((t) => t.id !== id),
+    music: p.music.filter((u) => u.id !== id),
+  };
 }
 
 export function commit(history, next) {
