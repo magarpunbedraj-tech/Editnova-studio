@@ -1,0 +1,12 @@
+{
+  "bundle": {
+    "externalBin": [
+      "binaries/ffmpeg",
+      "binaries/ffprobe"
+    ],
+    "resources": {
+      "binaries/FFMPEG-LICENSE.txt": "legal/FFMPEG-LICENSE.txt",
+      "binaries/FFMPEG-SOURCE.txt": "legal/FFMPEG-SOURCE.txt"
+    }
+  }
+}

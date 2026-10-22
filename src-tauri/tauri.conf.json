@@ -1,0 +1,76 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "EditNova Studio",
+  "version": "1.0.0",
+  "identifier": "studio.editnova.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "EditNova Studio",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 1024,
+        "minHeight": 680,
+        "center": true,
+        "dragDropEnabled": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data:; media-src 'self' asset: http://asset.localhost; connect-src ipc: http://ipc.localhost https://api.github.com",
+      "assetProtocol": {
+        "enable": true,
+        "scope": []
+      },
+      "devCsp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data:; media-src 'self' asset: http://asset.localhost; connect-src ipc: http://ipc.localhost https://api.github.com ws://localhost:1420 ws://127.0.0.1:1420 http://localhost:1420 http://127.0.0.1:1420"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "icons/icon.ico",
+      "icons/icon.png"
+    ],
+    "publisher": "EditNova Studio",
+    "copyright": "\u00a9 2026 EditNova Studio contributors. MIT licensed.",
+    "category": "Video",
+    "shortDescription": "Free offline video editor",
+    "longDescription": "EditNova Studio is a free video editor for Windows that works entirely on your computer: import clips, trim, split, fade, set volume and export MP4.",
+    "homepage": "https://magarpunbedraj-tech.github.io/Editnova-studio/",
+    "resources": {
+      "../LICENSE": "legal/EditNova-LICENSE.txt",
+      "../legal/THIRD-PARTY-NOTICES.txt": "legal/THIRD-PARTY-NOTICES.txt"
+    },
+    "fileAssociations": [
+      {
+        "ext": [
+          "novaproject"
+        ],
+        "name": "EditNova Project",
+        "description": "EditNova Studio project",
+        "role": "Editor",
+        "mimeType": "application/x-editnova-project"
+      }
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": false,
+        "installerIcon": "icons/icon.ico",
+        "startMenuFolder": "EditNova Studio"
+      }
+    }
+  }
+}

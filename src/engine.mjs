@@ -1,0 +1,271 @@
+// Pure timeline operations. Every function returns a new project and never
+// mutates its input. Rules here mirror src-tauri/src/model.rs exactly.
+export const VERSION = 2;
+export const FPS = [24, 25, 30, 60];
+export const MAX_FADE = 10;
+export const MAX_VOLUME = 2;
+
+export const fresh = () => ({
+  version: VERSION,
+  name: "Untitled film",
+  width: 1920,
+  height: 1080,
+  fps: 30,
+  media: [],
+  clips: [],
+});
+
+export const clipLength = (c) => c.out - c.in;
+export const duration = (p) => p.clips.reduce((s, c) => s + clipLength(c), 0);
+
+export function makeClip(id, media, a = 0, b = media.duration) {
+  return { id, mediaId: media.id, in: a, out: b, volume: 1, fadeIn: 0, fadeOut: 0 };
+}
+
+/** Upgrades an older supported project (version 1) to the current format. */
+export function migrate(p) {
+  if (!p || typeof p !== "object") throw Error("Not an EditNova project");
+  if (p.version !== 1) return p;
+  return {
+    ...p,
+    version: VERSION,
+    clips: (p.clips || []).map((c) => ({ volume: 1, fadeIn: 0, fadeOut: 0, ...c })),
+  };
+}
+
+export function locate(p, time) {
+  let start = 0;
+  for (let i = 0; i < p.clips.length; i++) {
+    const c = p.clips[i],
+      end = start + clipLength(c);
+    if (time < end - 1e-6)
+      return {
+        clip: c,
+        index: i,
+        start,
+        source: c.in + Math.max(0, time - start),
+      };
+    start = end;
+  }
+  return null;
+}
+
+/** Sequence start time of each clip, in timeline order. */
+export function starts(p) {
+  let t = 0;
+  return p.clips.map((c) => {
+    const s = t;
+    t += clipLength(c);
+    return s;
+  });
+}
+
+export function validate(p) {
+  if (p.version !== VERSION) throw Error("Unsupported project version");
+  if (
+    !p.name ||
+    p.name.length > 256 ||
+    !FPS.includes(p.fps) ||
+    ![p.width, p.height].every(
+      (n) => Number.isInteger(n) && n >= 16 && n <= 7680 && n % 2 === 0,
+    )
+  )
+    throw Error("Invalid project settings");
+  if (
+    !Array.isArray(p.media) ||
+    !Array.isArray(p.clips) ||
+    p.clips.length > 1000 ||
+    p.media.length > 10000
+  )
+    throw Error("Invalid project");
+  const ids = new Set();
+  for (const m of p.media) {
+    if (
+      !m.id ||
+      ids.has(m.id) ||
+      typeof m.path !== "string" ||
+      !Number.isFinite(m.duration) ||
+      m.duration <= 0
+    )
+      throw Error("Invalid media");
+    ids.add(m.id);
+  }
+  const clips = new Set();
+  for (const c of p.clips) {
+    const m = p.media.find((m) => m.id === c.mediaId);
+    if (
+      !m ||
+      clips.has(c.id) ||
+      !c.id ||
+      ![c.in, c.out].every(Number.isFinite) ||
+      c.in < 0 ||
+      c.out - c.in < 1 / p.fps - 1e-6 ||
+      c.out > m.duration + 0.05
+    )
+      throw Error("Clip in and out points must stay inside the source video");
+    if (!Number.isFinite(c.volume) || c.volume < 0 || c.volume > MAX_VOLUME)
+      throw Error("Clip volume must be between 0% and 200%");
+    if (
+      ![c.fadeIn, c.fadeOut].every(Number.isFinite) ||
+      c.fadeIn < 0 ||
+      c.fadeOut < 0 ||
+      c.fadeIn > MAX_FADE ||
+      c.fadeOut > MAX_FADE ||
+      c.fadeIn + c.fadeOut > clipLength(c) + 1e-6
+    )
+      throw Error("Fades must fit inside the clip");
+    clips.add(c.id);
+  }
+  return p;
+}
+
+function withClip(p, id, fn) {
+  const q = structuredClone(p);
+  const c = q.clips.find((c) => c.id === id);
+  if (!c) throw Error("Select a clip first");
+  fn(c, q);
+  return validate(q);
+}
+
+/** Keeps fades inside a clip whose length just changed. */
+function fitFades(c) {
+  const len = clipLength(c);
+  if (c.fadeIn + c.fadeOut > len) {
+    const k = len / (c.fadeIn + c.fadeOut);
+    c.fadeIn = +(c.fadeIn * k).toFixed(3);
+    c.fadeOut = Math.max(0, +(len - c.fadeIn).toFixed(3));
+    if (c.fadeIn + c.fadeOut > len) c.fadeOut = Math.max(0, len - c.fadeIn - 1e-4);
+  }
+}
+
+export function trim(p, id, a, b) {
+  return withClip(p, id, (c) => {
+    c.in = a;
+    c.out = b;
+    fitFades(c);
+  });
+}
+
+/** Moves a clip's in point (side "in") or out point ("out") to the playhead. */
+export function trimToPlayhead(p, time, side) {
+  const at = locate(p, time);
+  if (!at) throw Error("Move the playhead over a clip first");
+  const f = 1 / p.fps;
+  if (side === "in") {
+    if (at.clip.out - at.source < f) throw Error("Leave at least one frame in the clip");
+    return trim(p, at.clip.id, at.source, at.clip.out);
+  }
+  if (at.source - at.clip.in < f) throw Error("Leave at least one frame in the clip");
+  return trim(p, at.clip.id, at.clip.in, at.source);
+}
+
+export function split(p, time, id) {
+  const at = locate(p, time);
+  if (
+    !at ||
+    at.source - at.clip.in < 1 / p.fps ||
+    at.clip.out - at.source < 1 / p.fps
+  )
+    throw Error("Split must leave at least one frame on each side");
+  const q = structuredClone(p);
+  const left = { ...at.clip, out: at.source, fadeOut: 0 },
+    right = { ...at.clip, id, in: at.source, fadeIn: 0 };
+  fitFades(left);
+  fitFades(right);
+  q.clips.splice(at.index, 1, left, right);
+  return validate(q);
+}
+
+export function reorder(p, id, delta) {
+  const q = structuredClone(p),
+    i = q.clips.findIndex((c) => c.id === id),
+    j = i + delta;
+  if (i >= 0 && j >= 0 && j < q.clips.length)
+    [q.clips[i], q.clips[j]] = [q.clips[j], q.clips[i]];
+  return q;
+}
+
+/** Moves a clip so it ends up at position `to` (0-based) in the sequence. */
+export function moveTo(p, id, to) {
+  const q = structuredClone(p),
+    i = q.clips.findIndex((c) => c.id === id);
+  if (i < 0) return q;
+  const [c] = q.clips.splice(i, 1);
+  q.clips.splice(Math.max(0, Math.min(to, q.clips.length)), 0, c);
+  return q;
+}
+
+export function remove(p, id) {
+  return { ...p, clips: p.clips.filter((c) => c.id !== id) };
+}
+
+export function duplicate(p, id, newId) {
+  const q = structuredClone(p),
+    i = q.clips.findIndex((c) => c.id === id);
+  if (i < 0) throw Error("Select a clip first");
+  q.clips.splice(i + 1, 0, { ...q.clips[i], id: newId });
+  return validate(q);
+}
+
+export function setAudio(p, id, volume) {
+  return withClip(p, id, (c) => {
+    c.volume = Math.round(Math.min(MAX_VOLUME, Math.max(0, volume)) * 100) / 100;
+  });
+}
+
+export function setFades(p, id, fadeIn, fadeOut) {
+  return withClip(p, id, (c) => {
+    const len = clipLength(c);
+    c.fadeIn = Math.min(MAX_FADE, Math.max(0, fadeIn));
+    c.fadeOut = Math.min(MAX_FADE, Math.max(0, fadeOut));
+    if (c.fadeIn + c.fadeOut > len)
+      throw Error(`Fades on this clip can total at most ${len.toFixed(2)} s`);
+  });
+}
+
+/** Removes media that no clip uses. */
+export function removeMedia(p, mediaId) {
+  if (p.clips.some((c) => c.mediaId === mediaId))
+    throw Error("Remove this video's clips from the timeline first");
+  return { ...p, media: p.media.filter((m) => m.id !== mediaId) };
+}
+
+/**
+ * Brightness (0–1) and gain multiplier for a moment inside a clip, matching
+ * the export's fade-from-black and audio fade.
+ */
+export function envelope(c, offset) {
+  const len = clipLength(c);
+  let k = 1;
+  if (c.fadeIn > 0 && offset < c.fadeIn) k = Math.min(k, offset / c.fadeIn);
+  if (c.fadeOut > 0 && offset > len - c.fadeOut)
+    k = Math.min(k, (len - offset) / c.fadeOut);
+  return Math.max(0, Math.min(1, k));
+}
+
+export function commit(history, next) {
+  validate(next);
+  return {
+    past: [...history.past, history.present].slice(-100),
+    present: structuredClone(next),
+    future: [],
+  };
+}
+export function undo(h) {
+  return h.past.length
+    ? {
+        past: h.past.slice(0, -1),
+        present: h.past.at(-1),
+        future: [h.present, ...h.future],
+      }
+    : h;
+}
+export function redo(h) {
+  return h.future.length
+    ? {
+        past: [...h.past, h.present],
+        present: h.future[0],
+        future: h.future.slice(1),
+      }
+    : h;
+}

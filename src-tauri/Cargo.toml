@@ -1,0 +1,20 @@
+[package]
+name = "editnova-studio"
+version = "1.0.0"
+edition = "2021"
+[features]
+default = ["desktop"]
+desktop = ["dep:tauri", "dep:tauri-build", "dep:rfd"]
+[[bin]]
+name = "editnova-studio"
+path = "src/main.rs"
+required-features = ["desktop"]
+[build-dependencies]
+tauri-build = { version = "2", features = [], optional = true }
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset"], optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rfd = { version = "0.15", optional = true }
+tempfile = "3"
+uuid = { version = "1", features = ["v4"] }

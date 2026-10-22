@@ -1,0 +1,142 @@
+name: Build Windows installer
+
+# Every push to main builds and tests the installer.
+# Pushing a tag such as v1.0.0 also publishes it as a GitHub Release.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Rust toolchain
+        run: rustup update stable --no-self-update && rustup default stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Download FFmpeg (BtbN GPL build, checksum verified)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $assets = gh release view latest --repo BtbN/FFmpeg-Builds --json assets --jq '.assets[].name'
+          $zip = $assets | Where-Object { $_ -match '^ffmpeg-n(\d+)\.(\d+)-latest-win64-gpl-\d+\.\d+\.zip$' } |
+            Sort-Object { [version]($_ -replace '^ffmpeg-n(\d+\.\d+)-.*$','$1') } | Select-Object -Last 1
+          if (-not $zip) { throw "No FFmpeg release build found" }
+          Write-Host "Using $zip"
+          New-Item -ItemType Directory -Force -Path ffdl | Out-Null
+          gh release download latest --repo BtbN/FFmpeg-Builds --pattern $zip --pattern checksums.sha256 --dir ffdl --clobber
+          $expected = (Select-String -Path ffdl/checksums.sha256 -Pattern ([regex]::Escape($zip)) | Select-Object -First 1).Line.Split(' ')[0].Trim()
+          $actual = (Get-FileHash "ffdl/$zip" -Algorithm SHA256).Hash.ToLower()
+          if ($expected -ne $actual) { throw "FFmpeg checksum mismatch: $expected vs $actual" }
+          Expand-Archive "ffdl/$zip" -DestinationPath ffdl/x -Force
+          $root = Get-ChildItem ffdl/x -Directory | Select-Object -First 1
+          $bin = Join-Path $root.FullName 'bin'
+          New-Item -ItemType Directory -Force -Path src-tauri/binaries | Out-Null
+          Copy-Item "$bin/ffmpeg.exe" src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe
+          Copy-Item "$bin/ffprobe.exe" src-tauri/binaries/ffprobe-x86_64-pc-windows-msvc.exe
+          Copy-Item (Join-Path $root.FullName 'LICENSE.txt') src-tauri/binaries/FFMPEG-LICENSE.txt
+          $ver = (& "$bin/ffmpeg.exe" -hide_banner -version | Select-Object -First 1)
+          $hash = if ($ver -match '-g([0-9a-f]{7,40})') { $Matches[1] } else { '' }
+          @"
+          FFmpeg build included with EditNova Studio
+          ===========================================
+          Archive:  $zip (sha256 $actual)
+          Version:  $ver
+          Built by: https://github.com/BtbN/FFmpeg-Builds (release 'latest', build scripts and dependency versions)
+          FFmpeg source for this commit: https://github.com/FFmpeg/FFmpeg/tree/$hash
+          A copy of the FFmpeg source is attached to the EditNova Studio GitHub release
+          that contains this installer (ffmpeg-source-$hash.tar.gz).
+          "@ | ForEach-Object { $_ -replace '(?m)^ {10}', '' } | Set-Content src-tauri/binaries/FFMPEG-SOURCE.txt -Encoding utf8
+          "FFMPEG_HASH=$hash" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $bin | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          & "$bin/ffmpeg.exe" -hide_banner -encoders | Select-String -Pattern 'libx264|h264_nvenc| aac '
+
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - name: Rust unit and real-render tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --locked
+
+      - name: Build installer
+        run: npx tauri build --config src-tauri/tauri.release.conf.json
+
+      - name: Collect installer
+        id: collect
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          if (-not $setup) { throw "Installer was not produced" }
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          New-Item -ItemType Directory -Force -Path dist-installer | Out-Null
+          Copy-Item $setup.FullName dist-installer/EditNova-Studio-Setup.exe
+          Copy-Item $setup.FullName "dist-installer/EditNova-Studio-$version-Setup.exe"
+          Get-FileHash dist-installer/*.exe -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } |
+            Set-Content dist-installer/SHA256SUMS.txt
+          Get-ChildItem dist-installer | Format-Table Name, Length
+
+      - name: Smoke test - silent install, bundled engine, app launch
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $p = Start-Process dist-installer/EditNova-Studio-Setup.exe -ArgumentList '/S' -PassThru -Wait
+          if ($p.ExitCode -ne 0) { throw "Installer exit code $($p.ExitCode)" }
+          $dir = Join-Path $env:LOCALAPPDATA 'EditNova Studio'
+          Get-ChildItem $dir -Recurse | Select-Object -First 30 | Format-Table FullName, Length
+          foreach ($f in 'ffmpeg.exe','ffprobe.exe','legal/FFMPEG-LICENSE.txt','legal/THIRD-PARTY-NOTICES.txt') {
+            if (-not (Test-Path (Join-Path $dir $f))) { throw "Missing $f after install" }
+          }
+          $exe = Get-ChildItem $dir -Filter *.exe | Where-Object { $_.Name -notmatch '^(ffmpeg|ffprobe|uninstall)' } | Select-Object -First 1
+          if (-not $exe) { throw "EditNova executable missing after install" }
+          & (Join-Path $dir 'ffmpeg.exe') -hide_banner -version | Select-Object -First 1
+          $app = Start-Process $exe.FullName -PassThru
+          Start-Sleep -Seconds 15
+          if ($app.HasExited) { throw "EditNova exited during startup with code $($app.ExitCode)" }
+          Stop-Process -Id $app.Id -Force
+          Write-Host "EditNova started and stayed running."
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EditNova-Studio-Windows
+          path: dist-installer/*
+          if-no-files-found: error
+
+      - name: Fetch FFmpeg source for the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          if ($env:FFMPEG_HASH) {
+            Invoke-WebRequest "https://github.com/FFmpeg/FFmpeg/archive/$($env:FFMPEG_HASH).tar.gz" -OutFile "dist-installer/ffmpeg-source-$($env:FFMPEG_HASH).tar.gz"
+          }
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: EditNova Studio ${{ github.ref_name }}
+          body_path: docs/RELEASE_NOTES.md
+          files: dist-installer/*
+          fail_on_unmatched_files: true

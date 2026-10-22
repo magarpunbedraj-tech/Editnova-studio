@@ -1,0 +1,483 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EditNova Studio</title>
+<meta name="description" content="EditNova Studio is a free video editor for Windows. Trim, split, fade and export MP4 — everything stays on your computer.">
+<meta property="og:title" content="EditNova Studio — free offline video editor for Windows">
+<meta property="og:description" content="Trim, split, fade and export MP4. No account, no uploads, no watermark.">
+<meta name="theme-color" content="#f5f3fc">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%23d9c9ff'/%3E%3Cstop offset='1' stop-color='%237b5cf0'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='18' fill='url(%23g)'/%3E%3Ctext x='32' y='45' font-family='Georgia' font-style='italic' font-weight='700' font-size='38' text-anchor='middle' fill='%231d1236'%3EN%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..800&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --paper: #f5f3fc;
+  --ink: #17142e;
+  --muted: #5f5a7a;
+  --line: #ddd8ee;
+  --violet: #6d4fe0;
+  --violet-soft: #e9e2ff;
+  --amber: #f2a33a;
+  --night: #15122b;
+  --night-2: #221d43;
+  --card: #ffffff;
+  --display: "Bricolage Grotesque", "Segoe UI", system-ui, sans-serif;
+  --body: "Instrument Sans", "Segoe UI", system-ui, sans-serif;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #110f22;
+    --ink: #efecff;
+    --muted: #a39fc0;
+    --line: #2c2850;
+    --violet: #b9a2ff;
+    --violet-soft: #26204a;
+    --card: #1a1733;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #110f22; --ink: #efecff; --muted: #a39fc0; --line: #2c2850;
+  --violet: #b9a2ff; --violet-soft: #26204a; --card: #1a1733; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font: 17px/1.6 var(--body);
+  -webkit-font-smoothing: antialiased;
+}
+a { color: inherit; }
+:focus-visible { outline: 3px solid var(--amber); outline-offset: 3px; border-radius: 4px; }
+.wrap { width: min(1120px, 100% - 32px); margin-inline: auto; }
+
+/* Top bar */
+.top { display: flex; align-items: center; justify-content: space-between; padding: 22px 0; }
+.mark { display: flex; align-items: center; gap: 10px; text-decoration: none; font: 700 19px/1 var(--display); letter-spacing: -0.3px; }
+.mark i {
+  width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center;
+  background: linear-gradient(135deg, #d9c9ff, #7b5cf0); color: #1d1236;
+  font: italic 700 21px/1 Georgia, serif;
+}
+.top nav { display: flex; gap: 22px; font-size: 15px; }
+.top nav a { text-decoration: none; color: var(--muted); }
+.top nav a:hover { color: var(--ink); }
+
+/* Hero */
+.hero { padding: 24px 0 0; }
+.hero h1 {
+  font: 800 clamp(44px, 7.4vw, 92px)/0.92 var(--display);
+  letter-spacing: -0.045em;
+  margin: 0;
+  max-width: 11ch;
+  font-variation-settings: "opsz" 96;
+}
+.hero-row { display: grid; grid-template-columns: 1fr auto; gap: 32px; align-items: end; }
+.hero p.sub { font-size: clamp(18px, 2vw, 21px); color: var(--muted); max-width: 34ch; margin: 22px 0 0; }
+.cta { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
+.btn {
+  display: inline-flex; align-items: center; gap: 12px;
+  background: var(--ink); color: var(--paper);
+  padding: 17px 26px; border-radius: 14px; text-decoration: none;
+  font: 600 18px/1 var(--body);
+  transition: transform .15s ease;
+}
+.btn:hover { transform: translateY(-2px); }
+.btn svg { width: 20px; height: 20px; }
+.cta small { color: var(--muted); font-size: 14px; }
+.cta small a { color: var(--violet); }
+
+/* The editor object */
+.editor {
+  margin-top: 44px;
+  background: var(--night);
+  border-radius: 22px;
+  padding: clamp(14px, 2.4vw, 26px);
+  color: #e6e4f7;
+  box-shadow: 0 40px 90px -40px rgb(40 25 110 / .55);
+  border: 1px solid var(--line);
+  user-select: none;
+  -webkit-user-select: none;
+}
+.monitor {
+  position: relative;
+  aspect-ratio: 16 / 5.4;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #000;
+}
+.scene { position: absolute; inset: 0; opacity: 0; transition: opacity .25s ease; }
+.scene.on { opacity: 1; }
+.scene svg { width: 100%; height: 100%; display: block; }
+.veil { position: absolute; inset: 0; background: #000; pointer-events: none; }
+.caption {
+  position: absolute; left: 18px; bottom: 14px;
+  font: 600 clamp(13px, 1.6vw, 16px)/1.2 var(--body);
+  background: rgb(0 0 0 / .45); padding: 6px 10px; border-radius: 8px; color: #fff;
+}
+.tc {
+  position: absolute; right: 18px; top: 14px;
+  font: 600 14px/1 var(--body); font-variant-numeric: tabular-nums;
+  background: rgb(0 0 0 / .45); padding: 6px 9px; border-radius: 7px; color: #fff;
+}
+.track { position: relative; margin-top: 18px; padding-top: 22px; touch-action: none; cursor: ew-resize; }
+.ruler { position: absolute; inset: 0 0 auto; height: 18px; display: flex; justify-content: space-between; color: #8f8ab4; font: 12px/1 var(--body); font-variant-numeric: tabular-nums; }
+.clips { display: flex; gap: 4px; height: clamp(54px, 7vw, 76px); }
+.clip {
+  position: relative; border-radius: 9px; overflow: hidden;
+  border: 1px solid rgb(255 255 255 / .16);
+}
+.clip span {
+  position: absolute; left: 10px; bottom: 7px; font: 600 13px/1.1 var(--body); color: #fff;
+  text-shadow: 0 1px 3px rgb(0 0 0 / .6); white-space: nowrap;
+}
+.clip .fade { position: absolute; top: 0; bottom: 0; width: 18%; }
+.clip .fade.l { left: 0; background: linear-gradient(to bottom right, rgb(0 0 0 / .55) 50%, transparent 50.5%); }
+.clip .fade.r { right: 0; background: linear-gradient(to bottom left, rgb(0 0 0 / .55) 50%, transparent 50.5%); }
+.wave { margin-top: 5px; display: flex; gap: 4px; height: 20px; }
+.wave div {
+  border-radius: 6px; background: #1c3b39;
+  background-image: repeating-linear-gradient(90deg, #3fae9b 0 2px, transparent 2px 5px);
+  background-size: 100% 60%; background-repeat: no-repeat; background-position: bottom;
+}
+.head {
+  position: absolute; top: 0; bottom: -25px; width: 0; border-left: 2px solid var(--amber);
+  pointer-events: none;
+}
+.head::before {
+  content: ""; position: absolute; top: 0; left: -8px; width: 14px; height: 14px; background: var(--amber);
+  clip-path: polygon(0 0, 100% 0, 100% 55%, 50% 100%, 0 55%);
+}
+.hint-drag { margin: 14px 0 0; font-size: 14px; color: #a7a2cc; }
+
+/* Sections */
+section.block { padding: 110px 0 0; }
+.block h2 {
+  font: 750 clamp(32px, 4.6vw, 52px)/1.02 var(--display);
+  letter-spacing: -0.03em; margin: 0 0 14px; max-width: 18ch;
+}
+.block .intro { color: var(--muted); max-width: 56ch; margin: 0 0 40px; font-size: 19px; }
+.features { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0 56px; margin: 0; }
+.features div { padding: 22px 0; border-top: 1px solid var(--line); }
+.features dt { font: 650 21px/1.25 var(--display); letter-spacing: -0.01em; margin-bottom: 6px; }
+.features dd { margin: 0; color: var(--muted); max-width: 46ch; }
+
+.steps { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(3, 1fr); gap: 28px; counter-reset: s; }
+.steps li { counter-increment: s; position: relative; padding-top: 64px; }
+.steps li::before {
+  content: counter(s); position: absolute; top: 0; left: 0;
+  width: 46px; height: 46px; border-radius: 50%; display: grid; place-items: center;
+  font: 700 21px/1 var(--display); background: var(--violet-soft); color: var(--violet);
+}
+.steps h3 { font: 650 22px/1.2 var(--display); margin: 0 0 8px; }
+.steps p { margin: 0; color: var(--muted); }
+.steps kbd, .faq kbd {
+  font: 600 14px var(--body); background: var(--card); border: 1px solid var(--line);
+  border-bottom-width: 2px; border-radius: 6px; padding: 1px 6px; color: var(--ink);
+}
+
+.split { display: grid; grid-template-columns: 1fr 1fr; gap: 56px; }
+.specs { width: 100%; border-collapse: collapse; font-size: 16px; }
+.specs th, .specs td { text-align: left; padding: 13px 0; border-top: 1px solid var(--line); vertical-align: top; }
+.specs th { font-weight: 600; width: 38%; padding-right: 18px; }
+.specs td { color: var(--muted); }
+.privacy {
+  background: var(--violet-soft); border-radius: 20px; padding: 34px;
+}
+.privacy h3 { font: 700 28px/1.1 var(--display); margin: 0 0 12px; letter-spacing: -0.02em; }
+.privacy p { margin: 0 0 12px; color: var(--ink); }
+.privacy p:last-child { margin: 0; color: var(--muted); }
+
+.faq details { border-top: 1px solid var(--line); padding: 4px 0; }
+.faq details:last-child { border-bottom: 1px solid var(--line); }
+.faq summary {
+  cursor: pointer; list-style: none; padding: 18px 40px 18px 0; position: relative;
+  font: 600 19px/1.3 var(--display);
+}
+.faq summary::-webkit-details-marker { display: none; }
+.faq summary::after {
+  content: "+"; position: absolute; right: 6px; top: 14px; font: 400 28px/1 var(--body); color: var(--violet);
+}
+.faq details[open] summary::after { content: "−"; }
+.faq details p { margin: 0 0 18px; color: var(--muted); max-width: 70ch; }
+
+.final { text-align: left; padding: 120px 0 90px; }
+.final h2 { margin-bottom: 26px; }
+footer { border-top: 1px solid var(--line); padding: 28px 0 40px; color: var(--muted); font-size: 14px; }
+footer .wrap { display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
+footer a { color: var(--muted); }
+
+@media (max-width: 860px) {
+  .hero-row, .split, .features, .steps { grid-template-columns: 1fr; }
+  .top nav { display: none; }
+  .monitor { aspect-ratio: 16 / 10; }
+  .clip span { font-size: 11px; left: 6px; }
+  section.block { padding-top: 80px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .scene, .btn { transition: none; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <a class="mark" href="#"><i aria-hidden="true">N</i>EditNova Studio</a>
+    <nav aria-label="Page">
+      <a href="#features">Features</a>
+      <a href="#install">Install</a>
+      <a href="#faq">Questions</a>
+      <a href="https://github.com/magarpunbedraj-tech/Editnova-studio">Source code</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div class="hero-row">
+        <div>
+          <h1>Cut your story together.</h1>
+          <p class="sub">A free video editor for Windows. No account, no uploads, no watermark. Your footage never leaves your computer.</p>
+        </div>
+        <div class="cta">
+          <a class="btn download" href="https://github.com/magarpunbedraj-tech/Editnova-studio/releases/latest/download/EditNova-Studio-Setup.exe">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 20h14"/></svg>
+            Download for Windows
+          </a>
+          <small class="release-line">Windows 10 and 11, 64-bit. <a href="#install">How to install</a></small>
+        </div>
+      </div>
+
+      <div class="editor" aria-label="A preview of the EditNova timeline. Drag across it to scrub through three clips.">
+        <div class="monitor">
+          <div class="scene" data-i="0">
+            <svg viewBox="0 0 1600 700" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+              <defs><linearGradient id="sky1" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffb46b"/><stop offset=".55" stop-color="#ff7d8a"/><stop offset="1" stop-color="#5b3c8f"/></linearGradient></defs>
+              <rect width="1600" height="700" fill="url(#sky1)"/>
+              <circle cx="1060" cy="330" r="95" fill="#ffe2a8"/>
+              <path d="M0 470 L230 260 L380 380 L560 190 L760 400 L900 300 L1100 450 L1300 280 L1600 470 V700 H0Z" fill="#3c2b6b"/>
+              <path d="M0 540 L300 430 L520 520 L800 420 L1120 540 L1400 450 L1600 520 V700 H0Z" fill="#251a4a"/>
+              <rect y="590" width="1600" height="110" fill="#1b1438"/>
+              <path d="M980 610h160M1000 640h120M1020 668h80" stroke="#ffd59a" stroke-width="6" stroke-linecap="round" opacity=".7"/>
+            </svg>
+          </div>
+          <div class="scene" data-i="1">
+            <svg viewBox="0 0 1600 700" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+              <rect width="1600" height="700" fill="#1e2a4a"/>
+              <rect x="0" y="420" width="1600" height="280" fill="#2a3150"/>
+              <g fill="#ffcf6b"><circle cx="160" cy="120" r="14"/><circle cx="300" cy="90" r="14"/><circle cx="440" cy="120" r="14"/><circle cx="580" cy="90" r="14"/><circle cx="720" cy="120" r="14"/><circle cx="860" cy="90" r="14"/><circle cx="1000" cy="120" r="14"/><circle cx="1140" cy="90" r="14"/><circle cx="1280" cy="120" r="14"/><circle cx="1420" cy="90" r="14"/></g>
+              <path d="M100 105 Q 300 80 500 105 T 900 105 T 1300 105 T 1600 100" stroke="#ffcf6b" stroke-width="3" fill="none" opacity=".5"/>
+              <rect x="230" y="260" width="460" height="230" rx="16" fill="#e2574c"/>
+              <rect x="230" y="230" width="460" height="56" rx="12" fill="#f7e3c1"/>
+              <rect x="840" y="300" width="420" height="190" rx="16" fill="#3fae9b"/>
+              <rect x="840" y="272" width="420" height="50" rx="12" fill="#f7e3c1"/>
+              <ellipse cx="460" cy="510" rx="200" ry="22" fill="#141a33" opacity=".6"/>
+              <ellipse cx="1050" cy="510" rx="190" ry="22" fill="#141a33" opacity=".6"/>
+              <g fill="#ffffff" opacity=".85"><circle cx="400" cy="200" r="16"/><circle cx="460" cy="185" r="20"/><circle cx="520" cy="205" r="14"/></g>
+            </svg>
+          </div>
+          <div class="scene" data-i="2">
+            <svg viewBox="0 0 1600 700" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+              <defs><linearGradient id="lake" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#9fd7ff"/><stop offset="1" stop-color="#4c8fd6"/></linearGradient></defs>
+              <rect width="1600" height="700" fill="url(#lake)"/>
+              <path d="M0 330 L280 120 L470 260 L640 60 L860 280 L1040 160 L1300 330 L1600 200 V380 H0Z" fill="#f4f7ff"/>
+              <path d="M0 380 L240 250 L430 340 L640 230 L880 360 L1100 270 L1360 370 L1600 300 V420 H0Z" fill="#3d7a5a"/>
+              <rect y="420" width="1600" height="280" fill="#2f6fb8"/>
+              <path d="M620 520 l120 0 l-20 30 l-80 0z" fill="#e2574c"/>
+              <path d="M680 470 v50" stroke="#f4f7ff" stroke-width="5"/>
+              <path d="M200 600h260M900 640h300M1200 560h200" stroke="#bfe3ff" stroke-width="5" stroke-linecap="round" opacity=".6"/>
+            </svg>
+          </div>
+          <div class="veil"></div>
+          <div class="caption"></div>
+          <div class="tc">00:00.00</div>
+        </div>
+
+        <div class="track" role="slider" tabindex="0" aria-label="Playhead" aria-valuemin="0" aria-valuemax="28" aria-valuenow="0">
+          <div class="ruler" aria-hidden="true"><span>00:00</span><span>00:07</span><span>00:14</span><span>00:21</span><span>00:28</span></div>
+          <div class="clips" aria-hidden="true">
+            <div class="clip" style="flex:9;background:linear-gradient(120deg,#ff9a6b,#7d4ba8)"><i class="fade l"></i><span>Sunrise, Sarangkot</span></div>
+            <div class="clip" style="flex:8;background:linear-gradient(120deg,#e2574c,#2a3150)"><span>Momo stall, Thamel</span></div>
+            <div class="clip" style="flex:11;background:linear-gradient(120deg,#9fd7ff,#2f6fb8)"><i class="fade r"></i><span>Boat on Phewa Lake</span></div>
+          </div>
+          <div class="wave" aria-hidden="true"><div style="flex:9"></div><div style="flex:8"></div><div style="flex:11"></div></div>
+          <div class="head"></div>
+        </div>
+        <p class="hint-drag">Drag across the timeline. This is how editing feels in EditNova: clips in a row, a playhead, and a picture that follows.</p>
+      </div>
+    </section>
+
+    <section class="block" id="features">
+      <h2>Everything a short film needs.</h2>
+      <p class="intro">Built for vlogs, shop promos, event videos and school projects. Simple enough for your first edit, careful enough that it never damages your files.</p>
+      <dl class="features">
+        <div><dt>Trim and split</dt><dd>Cut away the shaky start, split a clip at the playhead with one key, and drag clips into the order that tells your story.</dd></div>
+        <div><dt>Fades and volume</dt><dd>Fade in from black, fade out at the end, mute a noisy clip or boost a quiet voice up to 200%.</dd></div>
+        <div><dt>Export for any screen</dt><dd>MP4 that plays everywhere: 1080p and 4K landscape, vertical for Reels, Shorts and TikTok, square and 4:5 posts.</dd></div>
+        <div><dt>Fast on NVIDIA graphics</dt><dd>If your laptop has an NVIDIA GPU, exports use it automatically and finish several times faster.</dd></div>
+        <div><dt>Your originals stay untouched</dt><dd>Edits are instructions saved in a small project file. The video files you imported are never changed or moved.</dd></div>
+        <div><dt>Recovers after a crash</dt><dd>EditNova keeps a recovery copy of your latest edits, so a power cut costs you seconds, not an afternoon.</dd></div>
+        <div><dt>Opens almost any video</dt><dd>MP4, MOV, MKV, WebM, AVI and M4V from phones, cameras and screen recorders. Mixed sizes are fitted with black bars, never stretched.</dd></div>
+        <div><dt>Works offline</dt><dd>No sign-in and no internet needed to edit. The only time it goes online is a quiet check for a newer version.</dd></div>
+      </dl>
+    </section>
+
+    <section class="block" id="install">
+      <h2>Installed in a minute.</h2>
+      <p class="intro">One file installs everything, including the video engine. You don't need administrator rights.</p>
+      <ol class="steps">
+        <li><h3>Download</h3><p>Click <strong>Download for Windows</strong> and save <em>EditNova-Studio-Setup.exe</em>.</p></li>
+        <li><h3>Run the installer</h3><p>Double-click it. If Windows shows <em>“Windows protected your PC”</em>, click <kbd>More info</kbd> then <kbd>Run anyway</kbd>. This appears because the app is new and not yet code-signed.</p></li>
+        <li><h3>Start editing</h3><p>Open EditNova Studio from the Start menu, click <strong>Import videos</strong>, and press <kbd>Space</kbd> to play.</p></li>
+      </ol>
+    </section>
+
+    <section class="block">
+      <div class="split">
+        <div>
+          <h2>What you need.</h2>
+          <table class="specs">
+            <tr><th scope="row">System</th><td>Windows 10 or 11, 64-bit</td></tr>
+            <tr><th scope="row">Memory</th><td>8 GB or more recommended for 1080p</td></tr>
+            <tr><th scope="row">Disk space</th><td>About 250 MB for the app, plus room for your exports</td></tr>
+            <tr><th scope="row">Graphics</th><td>Any. NVIDIA GeForce GTX 900 series or newer speeds up export</td></tr>
+            <tr><th scope="row">Also uses</th><td>Microsoft Edge WebView2, already part of Windows 11 and installed automatically if missing</td></tr>
+          </table>
+        </div>
+        <div class="privacy">
+          <h3>Private by design.</h3>
+          <p>EditNova has no account system, no analytics and no cloud. Your clips, projects and exports stay on your drives.</p>
+          <p>The only network request is a version check against GitHub when the app starts. It sends nothing about you or your work.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="block faq" id="faq">
+      <h2>Questions.</h2>
+      <details><summary>Is it really free?</summary><p>Yes. EditNova Studio is open source under the MIT license. There is no trial, no paid tier and no watermark on your videos.</p></details>
+      <details><summary>Why does Windows warn me when I install it?</summary><p>Windows SmartScreen warns about apps that are new or not signed with a paid code-signing certificate. Click <kbd>More info</kbd> and then <kbd>Run anyway</kbd>. You can compare the file's SHA-256 checksum with the one listed on the release page.</p></details>
+      <details><summary>A video won't play in the preview. What do I do?</summary><p>Select its clip and choose <strong>Build smooth preview</strong>. EditNova makes a lightweight copy just for previewing. Your export always uses the original file at full quality.</p></details>
+      <details><summary>Where are my projects saved?</summary><p>Wherever you choose. A project is a small <em>.novaproject</em> file that remembers your cuts and points to your video files. If you move the videos, open the project and use <strong>Replace or relink source</strong> on the affected clip.</p></details>
+      <details><summary>Can I add text, music tracks or transitions?</summary><p>Not yet. This first release focuses on a reliable single-track edit with fades and volume. Titles, a separate music track and transitions are next on the roadmap.</p></details>
+      <details><summary>Does it work on Mac or Linux?</summary><p>The first release is for Windows. The code is cross-platform, so other systems may follow.</p></details>
+    </section>
+
+    <section class="block final">
+      <h2>Your next video starts here.</h2>
+      <div class="cta">
+        <a class="btn download" href="https://github.com/magarpunbedraj-tech/Editnova-studio/releases/latest/download/EditNova-Studio-Setup.exe">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 20h14"/></svg>
+          Download for Windows
+        </a>
+        <small class="release-line">Windows 10 and 11, 64-bit.</small>
+      </div>
+    </section>
+  </main>
+</div>
+<footer>
+  <div class="wrap">
+    <span>EditNova Studio is free and open source (MIT). Exports use FFmpeg, included under the GPL.</span>
+    <span><a href="https://github.com/magarpunbedraj-tech/Editnova-studio">Source code</a> &nbsp; <a href="https://github.com/magarpunbedraj-tech/Editnova-studio/releases">All releases</a></span>
+  </div>
+</footer>
+
+<script>
+(() => {
+  const REPO = "magarpunbedraj-tech/Editnova-studio";
+  const clips = [
+    { len: 9, name: "Sunrise, Sarangkot", fadeIn: 1.5 },
+    { len: 8, name: "Momo stall, Thamel" },
+    { len: 11, name: "Boat on Phewa Lake", fadeOut: 2 },
+  ];
+  const total = clips.reduce((s, c) => s + c.len, 0);
+  const track = document.querySelector(".track");
+  const head = document.querySelector(".head");
+  const scenes = [...document.querySelectorAll(".scene")];
+  const caption = document.querySelector(".caption");
+  const veil = document.querySelector(".veil");
+  const tc = document.querySelector(".tc");
+  let t = 0, auto = true;
+
+  const fmt = (s) => {
+    const m = Math.floor(s / 60), r = s % 60;
+    return String(m).padStart(2, "0") + ":" + r.toFixed(2).padStart(5, "0");
+  };
+  function render() {
+    let start = 0, i = 0;
+    while (i < clips.length - 1 && t >= start + clips[i].len) { start += clips[i].len; i++; }
+    const c = clips[i], off = t - start;
+    let k = 1;
+    if (c.fadeIn && off < c.fadeIn) k = off / c.fadeIn;
+    if (c.fadeOut && off > c.len - c.fadeOut) k = Math.min(k, (c.len - off) / c.fadeOut);
+    scenes.forEach((s, j) => s.classList.toggle("on", j === i));
+    veil.style.opacity = String(1 - Math.max(0, Math.min(1, k)));
+    caption.textContent = c.name;
+    tc.textContent = fmt(t);
+    head.style.left = (t / total) * 100 + "%";
+    track.setAttribute("aria-valuenow", t.toFixed(1));
+    track.setAttribute("aria-valuetext", fmt(t) + ", " + c.name);
+  }
+  function fromPointer(e) {
+    const r = track.getBoundingClientRect();
+    t = Math.max(0, Math.min(total - 0.01, ((e.clientX - r.left) / r.width) * total));
+    render();
+  }
+  track.addEventListener("pointerdown", (e) => {
+    auto = false;
+    track.setPointerCapture(e.pointerId);
+    fromPointer(e);
+  });
+  track.addEventListener("pointermove", (e) => { if (e.buttons) fromPointer(e); });
+  track.addEventListener("keydown", (e) => {
+    const d = e.shiftKey ? 5 : 1;
+    if (e.key === "ArrowRight") t = Math.min(total - 0.01, t + d);
+    else if (e.key === "ArrowLeft") t = Math.max(0, t - d);
+    else if (e.key === "Home") t = 0;
+    else if (e.key === "End") t = total - 0.01;
+    else return;
+    e.preventDefault();
+    auto = false;
+    render();
+  });
+
+  // One orchestrated moment: play the timeline once on load, unless motion is reduced.
+  const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (still) { t = 10.5; render(); }
+  else {
+    let last = performance.now();
+    const play = (now) => {
+      if (!auto) return;
+      t += (now - last) / 1000 * 1.6;
+      last = now;
+      if (t >= total - 0.01) { t = total - 0.01; render(); return; }
+      render();
+      requestAnimationFrame(play);
+    };
+    render();
+    requestAnimationFrame(play);
+  }
+
+  // Show the current version and download size when GitHub has a release.
+  fetch("https://api.github.com/repos/" + REPO + "/releases/latest")
+    .then((r) => (r.ok ? r.json() : null))
+    .then((rel) => {
+      if (!rel) return;
+      const asset = (rel.assets || []).find((a) => a.name === "EditNova-Studio-Setup.exe");
+      const size = asset ? ", " + Math.round(asset.size / 1048576) + " MB" : "";
+      document.querySelectorAll(".release-line").forEach((el) => {
+        const link = el.querySelector("a");
+        el.textContent = "Version " + String(rel.tag_name).replace(/^v/, "") + size + ". Windows 10 and 11, 64-bit. ";
+        if (link) el.append(link);
+      });
+    })
+    .catch(() => {});
+})();
+</script>
+</body>
+</html>

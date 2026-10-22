@@ -1,0 +1,34 @@
+EditNova Studio — third-party notices
+=====================================
+
+EditNova Studio itself is released under the MIT License (see
+EditNova-LICENSE.txt in this folder).
+
+The application is built with the following open-source components:
+
+* Tauri (https://tauri.app) — MIT or Apache-2.0
+* React and React DOM (https://react.dev) — MIT
+* Zustand (https://github.com/pmndrs/zustand) — MIT
+* Tailwind CSS preflight (https://tailwindcss.com) — MIT
+* serde, serde_json, tempfile, uuid, rfd and their dependencies (Rust crates
+  listed in src-tauri/Cargo.lock of the source code) — MIT and/or Apache-2.0
+* Microsoft Edge WebView2 Runtime — installed from Microsoft, under Microsoft's
+  own license terms; not redistributed inside this installer.
+
+FFmpeg
+------
+The Windows installer includes ffmpeg.exe and ffprobe.exe, unmodified builds of
+FFmpeg (https://ffmpeg.org) produced by the FFmpeg-Builds project
+(https://github.com/BtbN/FFmpeg-Builds). These builds are licensed under the
+GNU General Public License version 3 because they include libx264 and other GPL
+components. EditNova Studio runs them as separate programs; they are not linked
+into EditNova.
+
+* The full license text is in FFMPEG-LICENSE.txt in this folder.
+* FFMPEG-SOURCE.txt names the exact build that was included and where its
+  complete corresponding source code can be obtained.
+* You may replace ffmpeg.exe and ffprobe.exe in the install folder with any
+  other compatible build.
+
+H.264 and AAC are covered by patents in some countries. You are responsible for
+any licensing that applies to how you use or distribute encoded video.

@@ -1,0 +1,6 @@
+{
+  "identifier": "main",
+  "description": "Only window events; all file dialogs and media work are Rust commands.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}
