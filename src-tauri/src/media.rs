@@ -587,7 +587,13 @@ pub fn part_video(p: &Project, part: &Part, piece_len: f64) -> String {
 pub fn part_audio(part: &Part) -> String {
     let c = &part.clip;
     let mut af = String::from("aresample=48000:async=1:first_pts=0");
-    let tempo = atempo(c.speed);
+    // Generated silence needs no tempo change (atempo would add a faint
+    // click at its start).
+    let tempo = if part.has_audio {
+        atempo(c.speed)
+    } else {
+        String::new()
+    };
     if !tempo.is_empty() {
         af.push(',');
         af.push_str(&tempo);
