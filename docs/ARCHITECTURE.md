@@ -23,7 +23,7 @@ persistence are tested without the GUI. Blocking work runs on Tauri's worker
 pool; progress events stream to React; an atomic flag cancels jobs; a busy
 guard prevents overlapping media jobs.
 
-## Document model (version 3)
+## Document model (version 4)
 
 `name`, output `width`, `height`, `fps`, `media[]`, ordered `clips[]`.
 Media: UUID, absolute path, name, duration, dimensions, audio flag.
@@ -37,7 +37,15 @@ volume, fades) and `duckMusic`. Media gain `kind` (`video` or `audio`); only
 video media may be clips, and music needs media with sound. IDs are unique
 across clips, titles and music.
 
-Version 1 and 2 files are upgraded on load (default volume and fades, empty
+Version 4 adds per-clip `speed` (0.25–4) and `blend` (`dissolve`, `dip`,
+`wipe` or `slide`, with a duration) describing a transition from the previous
+clip. A clip lasts `(out − in) / speed` on the timeline, and a blend makes it
+start that many seconds before the previous clip ends, so the timeline length
+is the sum of clip lengths minus blend durations. Blends are at most half of
+either neighbour and 5 s, never on the first clip, and replace fades on the
+same edge.
+
+Version 1–3 files are upgraded on load (default volume and fades, empty
 titles and music); the next save writes version 3. Unknown versions are
 rejected.
 JavaScript (`engine.mjs`) and Rust (`model.rs`) enforce identical rules.
@@ -53,8 +61,15 @@ the concat demuxer (stream copy), probed for duration and fully decoded with
 `-xerror` before the result is copied beside the target and published with a
 no-clobber rename. Existing files are never overwritten.
 
-Titles and music are rendered inside each clip's segment, so there is still
-one encode per clip. For segment *i* starting at timeline time *a*, every
+Rendering works on **pieces** (`media::plan`): each clip's middle stretch,
+and each transition overlap. An overlap piece takes the end of the previous
+clip and the start of the next, normalizes both (speed via
+`setpts`/`atempo`, canvas fit, exact frame count with `trim`), and joins them
+with FFmpeg `xfade` (`fade`, `fadeblack`, `wipeleft`, `slideleft`) and an
+`afade` crossfade. Pieces are encoded independently and concatenated.
+
+Titles and music are rendered inside each piece, so there is still one
+encode per piece. For segment *i* starting at timeline time *a*, every
 title overlapping it becomes a `drawtext` filter whose `enable` window and
 alpha fade use times relative to *a*; a title crossing a cut is drawn by both
 segments and joins seamlessly. Title text is written to a file (`textfile=`,

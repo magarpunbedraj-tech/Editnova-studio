@@ -1,8 +1,14 @@
-# Known limitations (v1.1)
+# Known limitations (v1.2)
 
 - **One video track** plus one title lane and one music track. No overlays,
-  picture-in-picture, transitions between clips (fades go via black), speed
-  changes, color tools or effects yet. See `ROADMAP.md`.
+  picture-in-picture, color tools, speed ramps or reverse playback yet. See
+  `ROADMAP.md`.
+- **Transitions** are four styles, each at most half of the shorter clip. The
+  preview plays the incoming clip in a second player, so very fast scrubbing
+  can lag briefly; the export is frame-exact.
+- **Speed** previews through the player's playback rate; very slow speeds
+  (0.25×) may look steppy in the preview, and the export repeats frames
+  rather than generating in-between frames.
 - **Titles** are one line, centred, in Segoe UI Bold (Nirmala UI for
   Devanagari); no custom fonts, animation presets or multi-line text yet.
   Windows fonts are used, so a PC without them shows an error at export.

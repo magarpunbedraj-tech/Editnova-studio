@@ -2,8 +2,12 @@ use serde::{Deserialize, Serialize};
 
 /// Project format version written by this build. Older files load and are
 /// upgraded in memory: version 1 (EditNova 0.1) has no audio/fade fields,
-/// version 2 (EditNova 1.0) has no titles or music.
-pub const CURRENT_VERSION: u32 = 3;
+/// version 2 (EditNova 1.0) has no titles or music, version 3 (EditNova 1.1)
+/// has no speed or transitions.
+pub const CURRENT_VERSION: u32 = 4;
+pub const MIN_SPEED: f64 = 0.25;
+pub const MAX_SPEED: f64 = 4.0;
+pub const MAX_BLEND: f64 = 5.0;
 pub const MAX_TITLE_CHARS: usize = 80;
 pub const MAX_TIMELINE: f64 = 36_000.0;
 pub const MAX_FADE: f64 = 10.0;
@@ -108,6 +112,41 @@ pub fn valid_color(c: &str) -> bool {
     c.len() == 7 && c.starts_with('#') && c[1..].chars().all(|x| x.is_ascii_hexdigit())
 }
 
+/// How one clip turns into the next.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BlendKind {
+    /// Cross-dissolve.
+    Dissolve,
+    /// Dip to black and back.
+    Dip,
+    /// The next clip wipes in from the right.
+    Wipe,
+    /// The next clip slides in, pushing the current one out.
+    Slide,
+}
+
+impl BlendKind {
+    /// The FFmpeg `xfade` transition name.
+    pub fn xfade(self) -> &'static str {
+        match self {
+            BlendKind::Dissolve => "fade",
+            BlendKind::Dip => "fadeblack",
+            BlendKind::Wipe => "wipeleft",
+            BlendKind::Slide => "slideleft",
+        }
+    }
+}
+
+/// A transition from the previous clip into this one. Both clips overlap on
+/// the timeline for `duration` seconds.
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Blend {
+    pub kind: BlendKind,
+    pub duration: f64,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Clip {
@@ -123,6 +162,12 @@ pub struct Clip {
     pub fade_in: f64,
     #[serde(default)]
     pub fade_out: f64,
+    /// Playback speed: 0.25 (slow motion) to 4 (fast forward).
+    #[serde(default = "one")]
+    pub speed: f64,
+    /// Transition from the previous clip. Never set on the first clip.
+    #[serde(default)]
+    pub blend: Option<Blend>,
 }
 
 impl Clip {
@@ -135,10 +180,21 @@ impl Clip {
             volume: 1.0,
             fade_in: 0.0,
             fade_out: 0.0,
+            speed: 1.0,
+            blend: None,
         }
     }
-    pub fn len(&self) -> f64 {
+    /// Seconds of source footage used.
+    pub fn source_len(&self) -> f64 {
         self.out - self.r#in
+    }
+    /// Seconds the clip lasts on the timeline, after its speed change.
+    pub fn len(&self) -> f64 {
+        self.source_len() / self.speed
+    }
+    /// Seconds this clip overlaps the previous one.
+    pub fn blend_len(&self) -> f64 {
+        self.blend.map(|b| b.duration).unwrap_or(0.0)
     }
 }
 
@@ -176,13 +232,27 @@ impl Project {
             duck_music: false,
         }
     }
+    /// Timeline length: every clip's length minus the transition overlaps.
     pub fn duration(&self) -> f64 {
-        self.clips.iter().map(|c| c.len()).sum()
+        self.clips.iter().map(|c| c.len() - c.blend_len()).sum()
+    }
+    /// Timeline start time of each clip.
+    pub fn starts(&self) -> Vec<f64> {
+        let mut t = 0.0;
+        let mut prev = 0.0;
+        self.clips
+            .iter()
+            .map(|c| {
+                t += prev - c.blend_len();
+                prev = c.len();
+                t
+            })
+            .collect()
     }
     /// Upgrade an older supported format in place. Unknown versions are
     /// rejected by `validate`, never guessed.
     pub fn migrate(&mut self) {
-        if self.version == 1 || self.version == 2 {
+        if (1..CURRENT_VERSION).contains(&self.version) {
             self.version = CURRENT_VERSION;
         }
     }
@@ -220,6 +290,9 @@ impl Project {
                 || !c.r#in.is_finite()
                 || !c.out.is_finite()
                 || c.r#in < 0.0
+                || !c.speed.is_finite()
+                || c.speed < MIN_SPEED
+                || c.speed > MAX_SPEED
                 || c.len() < 1.0 / self.fps as f64 - 1e-6
                 || c.out > m.duration + 0.05
             {
@@ -232,6 +305,32 @@ impl Project {
                 return Err("Only videos can go on the video track".into());
             }
             fades_ok(c.fade_in, c.fade_out, c.len())?;
+        }
+        for (i, c) in self.clips.iter().enumerate() {
+            let Some(b) = c.blend else { continue };
+            if i == 0 {
+                return Err("The first clip cannot have a transition".into());
+            }
+            let prev = &self.clips[i - 1];
+            if !b.duration.is_finite()
+                || b.duration < 0.1
+                || b.duration > MAX_BLEND
+                || b.duration > prev.len() / 2.0 + 1e-6
+                || b.duration > c.len() / 2.0 + 1e-6
+            {
+                return Err(
+                    "A transition can last at most half of the shorter clip, up to 5 s".into(),
+                );
+            }
+            if c.fade_in > 0.0 || prev.fade_out > 0.0 {
+                return Err("Remove the fade on clips joined by a transition".into());
+            }
+        }
+        for (i, c) in self.clips.iter().enumerate() {
+            let tail = self.clips.get(i + 1).map(|n| n.blend_len()).unwrap_or(0.0);
+            if c.fade_in + c.fade_out + c.blend_len() + tail > c.len() + 1e-6 {
+                return Err("Fades and transitions on this clip overlap. Shorten one.".into());
+            }
         }
         let mut ids = std::collections::HashSet::new();
         for t in &self.titles {
@@ -366,6 +465,40 @@ mod tests {
         let mut q = p.clone();
         q.music[0].id = "t".into();
         assert!(q.validate().is_err(), "ids are unique across titles and music");
+    }
+    #[test]
+    fn speed_and_transitions_shape_the_timeline() {
+        let mut p = base();
+        p.media[0].duration = 30.0;
+        p.clips = vec![
+            Clip::new("a", "m", 0.0, 8.0),
+            Clip::new("b", "m", 0.0, 6.0),
+            Clip::new("c", "m", 0.0, 4.0),
+        ];
+        p.clips[1].speed = 2.0; // 3 s on the timeline
+        p.clips[1].blend = Some(Blend {
+            kind: BlendKind::Dissolve,
+            duration: 1.0,
+        });
+        p.clips[2].blend = Some(Blend {
+            kind: BlendKind::Wipe,
+            duration: 1.5,
+        });
+        p.validate().unwrap();
+        assert_eq!(p.starts(), vec![0.0, 7.0, 8.5]);
+        assert!((p.duration() - 12.5).abs() < 1e-9);
+        let mut q = p.clone();
+        q.clips[0].blend = q.clips[1].blend;
+        assert!(q.validate().is_err(), "first clip cannot blend");
+        let mut q = p.clone();
+        q.clips[2].blend.as_mut().unwrap().duration = 1.6;
+        assert!(q.validate().is_err(), "longer than half of a 3 s clip");
+        let mut q = p.clone();
+        q.clips[1].fade_out = 0.5;
+        assert!(q.validate().is_err(), "fade on a blended edge");
+        let mut q = p.clone();
+        q.clips[0].speed = 5.0;
+        assert!(q.validate().is_err());
     }
     #[test]
     fn version_two_upgrades_without_titles() {

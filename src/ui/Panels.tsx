@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import type { Clip, Media, Project, Recent } from "../types";
-import { clipLength, MAX_FADE } from "../engine.mjs";
+import { clipLength, MAX_FADE, SPEEDS } from "../engine.mjs";
 import { clock } from "../format";
 
 export function MediaBin(props: {
@@ -133,6 +133,7 @@ export function Inspector(props: {
   onTrim: (a: number, b: number) => void;
   onVolume: (v: number) => void;
   onFades: (a: number, b: number) => void;
+  onSpeed: (s: number) => void;
   onAction: (a: "earlier" | "later" | "duplicate" | "remove" | "relink" | "preview") => void;
 }) {
   const { p, clip, media } = props;
@@ -181,6 +182,29 @@ export function Inspector(props: {
                 Length {clock(clipLength(clip))} of {clock(media.duration)}. Press{" "}
                 <kbd>Q</kbd> or <kbd>W</kbd> to trim the start or end to the
                 playhead.
+              </p>
+            </section>
+            <section>
+              <h3>Speed</h3>
+              <div className="chips">
+                {SPEEDS.map((v) => (
+                  <button
+                    key={v}
+                    className={clip.speed === v ? "on" : ""}
+                    aria-pressed={clip.speed === v}
+                    onClick={() => props.onSpeed(v)}
+                  >
+                    {v}×
+                  </button>
+                ))}
+              </div>
+              <p className="hint">
+                {clip.speed < 1
+                  ? `Slow motion: plays ${Math.round(1 / clip.speed * 10) / 10} times longer.`
+                  : clip.speed > 1
+                    ? `Fast forward: plays ${clip.speed} times faster.`
+                    : "Normal speed."}{" "}
+                Voices keep their natural pitch.
               </p>
             </section>
             <section>

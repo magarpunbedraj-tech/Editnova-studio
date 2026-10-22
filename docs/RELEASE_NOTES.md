@@ -1,12 +1,11 @@
-## EditNova Studio 1.1: titles and music
+## EditNova Studio 1.2: transitions and speed
 
 **New**
-- **Titles.** Press **T** (or click **Add title**) to put text on screen at the playhead. Choose top, middle or bottom, three sizes, any colour, and an optional dark box. Titles fade in and out smoothly and can span several clips. Nepali (Devanagari) text is supported.
-- **Music track.** Press **M** (or click **Add music**) to add an MP3, WAV, M4A, AAC, OGG, FLAC or Opus file at the playhead. Drag it along the timeline, skip the song's intro, set its volume and fades.
-- **Automatic ducking.** Music gets quieter while your clips have sound, so voices stay clear. Turn it off in Project settings.
-- Drop sound files onto the window to add them to the music track. Sound files show a waveform.
+- **Transitions between clips.** Click the small diamond where two clips meet and pick **Dissolve**, **Dip to black**, **Wipe** or **Slide**, from 0.1 to 5 seconds. The sound crossfades too. The preview shows the transition as you scrub or play.
+- **Speed.** Select a clip and choose 0.25×, 0.5×, 0.75×, 1.5×, 2× or 4× for slow motion or fast forward. Voices keep their natural pitch.
+- The timeline shows speed (for example **2×**) on each clip and a striped zone where clips overlap.
 
-Titles and music are rendered in the same single pass as your video, so exporting takes no longer than before. Projects from 1.0 open and upgrade automatically.
+Transitions replace a fade on the same edge, and are removed automatically if you move a clip to the very start. Projects from earlier versions open and upgrade automatically.
 
 **Install:** download `EditNova-Studio-Setup.exe` below and run it. It updates an existing installation. If Windows SmartScreen warns you, choose **More info → Run anyway**.
 

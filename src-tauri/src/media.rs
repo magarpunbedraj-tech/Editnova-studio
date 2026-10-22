@@ -1,4 +1,4 @@
-use crate::model::{Media, MediaKind, Music, Placement, Project, Title};
+use crate::model::{BlendKind, Clip, Media, MediaKind, Music, Placement, Project, Title};
 use std::{
     hash::{Hash, Hasher},
     io::{Read, Seek, SeekFrom, Write},
@@ -470,53 +470,143 @@ pub fn frame_count(len: f64, fps: u32) -> u64 {
     ((len * fps as f64).round() as u64).max(1)
 }
 
-pub fn video_filter(p: &Project, len: f64, fade_in: f64, fade_out: f64) -> String {
+/// `atempo` accepts 0.5–2, so larger changes are chained.
+pub fn atempo(speed: f64) -> String {
+    let mut s = speed;
+    let mut out = Vec::new();
+    while s > 2.0 + 1e-9 {
+        out.push("atempo=2".to_string());
+        s /= 2.0;
+    }
+    while s < 0.5 - 1e-9 {
+        out.push("atempo=0.5".to_string());
+        s /= 0.5;
+    }
+    if (s - 1.0).abs() > 1e-6 {
+        out.push(format!("atempo={s:.6}"));
+    }
+    out.join(",")
+}
+
+/// One clip seen from `local_from` seconds into its own timeline length.
+#[derive(Clone)]
+pub struct Part {
+    pub clip: Clip,
+    pub path: String,
+    pub has_audio: bool,
+    pub local_from: f64,
+}
+
+impl Part {
+    /// Where to start reading the source file.
+    pub fn source_offset(&self) -> f64 {
+        self.clip.r#in + self.local_from * self.clip.speed
+    }
+}
+
+/// A stretch of the timeline rendered as one MP4 segment: either part of a
+/// single clip, or the overlap where one clip turns into the next.
+pub struct Piece {
+    pub start: f64,
+    pub len: f64,
+    pub blend: Option<BlendKind>,
+    pub parts: Vec<Part>,
+}
+
+/// Splits the timeline into pieces. A clip with transitions on both sides
+/// becomes [blend in] [middle] [blend out]; each blend is shared with the
+/// neighbouring clip.
+pub fn plan(p: &Project) -> Vec<Piece> {
+    let starts = p.starts();
+    let part = |c: &Clip, local_from: f64| {
+        let m = p.media.iter().find(|m| m.id == c.media_id);
+        Part {
+            clip: c.clone(),
+            path: m.map(|m| m.path.clone()).unwrap_or_default(),
+            has_audio: m.map(|m| m.audio).unwrap_or(false),
+            local_from,
+        }
+    };
+    let half_frame = 0.5 / p.fps as f64;
+    let mut out = Vec::new();
+    for (i, c) in p.clips.iter().enumerate() {
+        let lead = c.blend_len();
+        let tail = p.clips.get(i + 1).map(|n| n.blend_len()).unwrap_or(0.0);
+        if i > 0 && lead > 0.0 {
+            let prev = &p.clips[i - 1];
+            out.push(Piece {
+                start: starts[i],
+                len: lead,
+                blend: c.blend.map(|b| b.kind),
+                parts: vec![part(prev, prev.len() - lead), part(c, 0.0)],
+            });
+        }
+        let middle = c.len() - lead - tail;
+        if middle > half_frame {
+            out.push(Piece {
+                start: starts[i] + lead,
+                len: middle,
+                blend: None,
+                parts: vec![part(c, lead)],
+            });
+        }
+    }
+    out
+}
+
+/// Picture chain for one part: speed, fit to the canvas, exact frame count,
+/// and the clip's own fades placed in part-local time.
+pub fn part_video(p: &Project, part: &Part, piece_len: f64) -> String {
+    let c = &part.clip;
+    let pts = if (c.speed - 1.0).abs() > 1e-6 {
+        format!("setpts=(PTS-STARTPTS)/{:.6}", c.speed)
+    } else {
+        "setpts=PTS-STARTPTS".to_string()
+    };
     let mut vf = format!(
-        "setpts=PTS-STARTPTS,scale={w}:{h}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={f},tpad=stop_mode=clone:stop_duration=1,format=yuv420p",
+        "{pts},scale={w}:{h}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={f},tpad=stop_mode=clone:stop_duration=2,trim=end_frame={n},setpts=PTS-STARTPTS,settb=AVTB,format=yuv420p",
         w = p.width,
         h = p.height,
-        f = p.fps
+        f = p.fps,
+        n = frame_count(piece_len, p.fps),
     );
-    if fade_in > 0.0 {
-        vf.push_str(&format!(",fade=t=in:st=0:d={fade_in:.3}"));
+    if c.fade_in > 0.0 && part.local_from < 1e-6 {
+        vf.push_str(&format!(",fade=t=in:st=0:d={:.3}", c.fade_in));
     }
-    if fade_out > 0.0 {
-        vf.push_str(&format!(
-            ",fade=t=out:st={:.3}:d={fade_out:.3}",
-            (len - fade_out).max(0.0)
-        ));
+    if c.fade_out > 0.0 {
+        let st = c.len() - c.fade_out - part.local_from;
+        if st > -1e-6 {
+            vf.push_str(&format!(",fade=t=out:st={:.3}:d={:.3}", st.max(0.0), c.fade_out));
+        }
     }
     vf
 }
 
-pub fn audio_filter(volume: f64, len: f64, fade_in: f64, fade_out: f64) -> String {
+/// Sound chain for one part: resampled, speed-adjusted (pitch kept), volume,
+/// padded with silence, and the clip's own fades in part-local time.
+pub fn part_audio(part: &Part) -> String {
+    let c = &part.clip;
     let mut af = String::from("aresample=48000:async=1:first_pts=0");
-    if (volume - 1.0).abs() > 1e-6 {
-        af.push_str(&format!(",volume={volume:.4}"));
+    let tempo = atempo(c.speed);
+    if !tempo.is_empty() {
+        af.push(',');
+        af.push_str(&tempo);
+    }
+    if (c.volume - 1.0).abs() > 1e-6 {
+        af.push_str(&format!(",volume={:.4}", c.volume));
     }
     af.push_str(",apad");
-    if fade_in > 0.0 {
-        af.push_str(&format!(",afade=t=in:st=0:d={fade_in:.3}"));
+    if c.fade_in > 0.0 && part.local_from < 1e-6 {
+        af.push_str(&format!(",afade=t=in:st=0:d={:.3}", c.fade_in));
     }
-    if fade_out > 0.0 {
-        af.push_str(&format!(
-            ",afade=t=out:st={:.3}:d={fade_out:.3}",
-            (len - fade_out).max(0.0)
-        ));
+    if c.fade_out > 0.0 {
+        let st = c.len() - c.fade_out - part.local_from;
+        if st > -1e-6 {
+            af.push_str(&format!(",afade=t=out:st={:.3}:d={:.3}", st.max(0.0), c.fade_out));
+        }
     }
+    af.push_str(",aformat=sample_fmts=fltp:channel_layouts=stereo");
     af
-}
-
-/// One clip's slot in the rendered sequence.
-pub struct Segment {
-    /// Timeline time where the clip starts.
-    pub start: f64,
-    pub len: f64,
-    pub source_in: f64,
-    pub volume: f64,
-    pub fade_in: f64,
-    pub fade_out: f64,
-    pub has_audio: bool,
 }
 
 /// The part of a music item that plays during one segment.
@@ -629,13 +719,13 @@ pub fn find_font(devanagari: bool) -> Option<PathBuf> {
 /// no text ever needs escaping) and copies the font beside it.
 fn title_files(
     p: &Project,
-    seg: &Segment,
+    piece: &Piece,
     dir: &Path,
     index: usize,
 ) -> Result<Vec<TitleFile>, String> {
     let mut out = Vec::new();
     for (k, t) in p.titles.iter().enumerate() {
-        if t.start + t.duration <= seg.start + 1e-4 || t.start >= seg.start + seg.len - 1e-4 {
+        if t.start + t.duration <= piece.start + 1e-4 || t.start >= piece.start + piece.len - 1e-4 {
             continue;
         }
         let dev = has_devanagari(&t.text);
@@ -692,52 +782,83 @@ pub fn drawtext(p: &Project, seg_start: f64, tf: &TitleFile) -> String {
     )
 }
 
-/// Builds the complete filter graph for one segment: the clip's picture with
-/// fades and titles as `[v]`, and its sound mixed with any music as `[a]`.
-pub fn segment_graph(
+/// Builds the complete filter graph for one piece. Each part contributes a
+/// video input and, when its file has no sound, a generated silent input.
+/// Produces `[v]` (picture with titles) and `[a]` (sound mixed with music).
+pub fn piece_graph(
     p: &Project,
-    seg: &Segment,
+    piece: &Piece,
     titles: &[TitleFile],
     slices: &[MusicSlice],
 ) -> String {
-    let mut v = video_filter(p, seg.len, seg.fade_in, seg.fade_out);
+    let mut g = Vec::new();
+    let mut input = 0usize;
+    for (k, part) in piece.parts.iter().enumerate() {
+        let v = input;
+        let a = if part.has_audio { v } else { v + 1 };
+        input = a + 1;
+        g.push(format!("[{v}:V:0]{}[pv{k}]", part_video(p, part, piece.len)));
+        g.push(format!("[{a}:a:0]{}[pa{k}]", part_audio(part)));
+    }
+    let base = match piece.blend {
+        None => {
+            g.push("[pa0]anull[ca]".into());
+            "pv0"
+        }
+        Some(kind) => {
+            let d = frame_count(piece.len, p.fps) as f64 / p.fps as f64;
+            g.push(format!(
+                "[pv0][pv1]xfade=transition={}:duration={d:.6}:offset=0,format=yuv420p[vx]",
+                kind.xfade()
+            ));
+            g.push(format!(
+                "[pa0]afade=t=out:st=0:d={d:.6}[x0];[pa1]afade=t=in:st=0:d={d:.6}[x1];[x0][x1]amix=inputs=2:duration=longest:normalize=0[ca]"
+            ));
+            "vx"
+        }
+    };
+    let mut v = String::new();
     for tf in titles {
-        v.push(',');
-        v.push_str(&drawtext(p, seg.start, tf));
+        if !v.is_empty() {
+            v.push(',');
+        }
+        v.push_str(&drawtext(p, piece.start, tf));
     }
-    let base_in = if seg.has_audio { "0:a:0" } else { "1:a:0" };
-    let af = audio_filter(seg.volume, seg.len, seg.fade_in, seg.fade_out);
-    let mut g = format!(
-        "[0:V:0]{v}[v];[{base_in}]{af},aformat=sample_fmts=fltp:channel_layouts=stereo[ca]"
-    );
+    if v.is_empty() {
+        v.push_str("null");
+    }
+    g.push(format!("[{base}]{v}[v]"));
     if slices.is_empty() {
-        g.push_str(";[ca]anull[a]");
-        return g;
+        g.push("[ca]anull[a]".into());
+        return g.join(";");
     }
-    let first = if seg.has_audio { 1 } else { 2 };
     for (k, sl) in slices.iter().enumerate() {
         let delay = (sl.local_start * 1000.0).round() as u64;
-        g.push_str(&format!(
-            ";[{inp}:a:0]asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,volume='{gain}':eval=frame,adelay={delay}|{delay}[m{k}]",
-            inp = first + k,
+        g.push(format!(
+            "[{inp}:a:0]asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,volume='{gain}':eval=frame,adelay={delay}|{delay}[m{k}]",
+            inp = input + k,
             gain = music_gain(sl),
         ));
     }
     if slices.len() == 1 {
-        g.push_str(";[m0]anull[mm]");
+        g.push("[m0]anull[mm]".into());
     } else {
         let labels: String = (0..slices.len()).map(|k| format!("[m{k}]")).collect();
-        g.push_str(&format!(
-            ";{labels}amix=inputs={}:duration=longest:normalize=0[mm]",
+        g.push(format!(
+            "{labels}amix=inputs={}:duration=longest:normalize=0[mm]",
             slices.len()
         ));
     }
-    if p.duck_music && seg.has_audio && seg.volume > 0.0 {
-        g.push_str(";[ca]asplit=2[cb][sc];[mm][sc]sidechaincompress=threshold=0.02:ratio=8:attack=20:release=400[md];[cb][md]amix=inputs=2:duration=first:normalize=0[a]");
+    let speech = piece
+        .parts
+        .iter()
+        .any(|pt| pt.has_audio && pt.clip.volume > 0.0);
+    if p.duck_music && speech {
+        g.push("[ca]asplit=2[cb][sc];[mm][sc]sidechaincompress=threshold=0.02:ratio=8:attack=20:release=400[md];[cb][md]amix=inputs=2:duration=first:normalize=0[a]".into());
     } else {
-        g.push_str(";[ca][mm]amix=inputs=2:duration=first:normalize=0[a]");
+        g.push("[ca][mm]amix=inputs=2:duration=first:normalize=0[a]".into());
     }
-    g
+    g.join(";")
 }
 
 pub fn render(
@@ -786,34 +907,42 @@ pub fn render_with(
         std::fs::File::create(dir.path().join("segments.txt")).map_err(|e| e.to_string())?;
     let mut done = 0.0;
     let report = dir.path().join("progress.txt");
-    for (i, clip) in p.clips.iter().enumerate() {
-        let m = p
+    // Check every source once, and trust what is on disk now for sound.
+    let mut checked = p.clone();
+    for c in &p.clips {
+        let m = checked
             .media
-            .iter()
-            .find(|m| m.id == clip.media_id)
+            .iter_mut()
+            .find(|m| m.id == c.media_id)
             .ok_or("Unknown clip media")?;
         let actual = probe(Path::new(&m.path))?;
-        if clip.out > actual.duration + 0.05 {
+        if c.out > actual.duration + 0.05 {
             return Err(format!(
                 "{} is shorter than when it was added. Relink or re-trim it.",
                 m.name
             ));
         }
-        let len = clip.len();
-        let stage = format!("Rendering clip {} of {}", i + 1, p.clips.len());
+        m.audio = actual.audio;
+        m.path = actual.path;
+    }
+    let pieces = plan(&checked);
+    let starts = checked.starts();
+    for (i, piece) in pieces.iter().enumerate() {
+        let len = piece.len;
+        let clip_no = starts
+            .iter()
+            .rposition(|s| *s <= piece.start + 1e-6)
+            .unwrap_or(0)
+            + 1;
+        let stage = if piece.blend.is_some() {
+            format!("Rendering transition into clip {} of {}", clip_no, p.clips.len())
+        } else {
+            format!("Rendering clip {} of {}", clip_no, p.clips.len())
+        };
         progress(0.9 * done / total, stage.clone());
         let output = dir.path().join(format!("seg{i}.mp4"));
         let _ = std::fs::remove_file(&report);
-        let seg = Segment {
-            start: done,
-            len,
-            source_in: clip.r#in,
-            volume: clip.volume,
-            fade_in: clip.fade_in,
-            fade_out: clip.fade_out,
-            has_audio: actual.audio,
-        };
-        let slices = music_slices(p, seg.start, seg.len);
+        let slices = music_slices(&checked, piece.start, len);
         let mut c = command("ffmpeg");
         c.current_dir(dir.path()).args([
             "-hide_banner",
@@ -826,16 +955,18 @@ pub fn render_with(
             "file,pipe",
             "-progress",
         ])
-        .arg(&report)
-        .args(["-ss", &format!("{:.6}", clip.r#in), "-i"])
-        .arg(&actual.path);
-        if !actual.audio {
-            c.args([
-                "-f",
-                "lavfi",
-                "-i",
-                "anullsrc=channel_layout=stereo:sample_rate=48000",
-            ]);
+        .arg(&report);
+        for part in &piece.parts {
+            c.args(["-ss", &format!("{:.6}", part.source_offset()), "-i"])
+                .arg(&part.path);
+            if !part.has_audio {
+                c.args([
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "anullsrc=channel_layout=stereo:sample_rate=48000",
+                ]);
+            }
         }
         for sl in &slices {
             c.args([
@@ -847,8 +978,8 @@ pub fn render_with(
             ])
             .arg(&sl.path);
         }
-        let titles = title_files(p, &seg, dir.path(), i)?;
-        let graph = segment_graph(p, &seg, &titles, &slices);
+        let titles = title_files(&checked, piece, dir.path(), i)?;
+        let graph = piece_graph(&checked, piece, &titles, &slices);
         c.args([
             "-filter_complex",
             &graph,
@@ -911,7 +1042,7 @@ pub fn render_with(
     ]);
     run(c, cancel)?;
     let check = probe(&result)?;
-    if (check.duration - p.duration()).abs() > 0.2 + p.clips.len() as f64 * 2.0 / p.fps as f64 {
+    if (check.duration - p.duration()).abs() > 0.2 + pieces.len() as f64 * 2.0 / p.fps as f64 {
         return Err("The rendered duration does not match the timeline".into());
     }
     let stage = "Checking the finished video".to_string();
@@ -1003,13 +1134,80 @@ mod tests {
         assert_eq!(parse_progress("out_time_us=N/A\n"), None);
         assert_eq!(parse_progress(""), None);
     }
+    fn part(local_from: f64) -> Part {
+        let mut c = Clip::new("c", "m", 1.0, 5.0);
+        c.volume = 0.5;
+        c.fade_in = 1.0;
+        c.fade_out = 0.5;
+        Part {
+            clip: c,
+            path: "a.mp4".into(),
+            has_audio: true,
+            local_from,
+        }
+    }
     #[test]
-    fn filters_include_volume_and_fades_only_when_needed() {
-        let af = audio_filter(1.0, 4.0, 0.0, 0.0);
-        assert!(!af.contains("volume") && !af.contains("afade"));
-        let af = audio_filter(0.5, 4.0, 1.0, 0.5);
+    fn part_chains_place_fades_in_local_time() {
+        let af = part_audio(&part(0.0));
         assert!(af.contains("volume=0.5000"));
         assert!(af.contains("afade=t=in:st=0:d=1.000"));
         assert!(af.contains("afade=t=out:st=3.500:d=0.500"));
+        let later = part_audio(&part(2.0));
+        assert!(!later.contains("afade=t=in"));
+        assert!(later.contains("afade=t=out:st=1.500:d=0.500"));
+        let mut plain = part(0.0);
+        plain.clip.volume = 1.0;
+        plain.clip.fade_in = 0.0;
+        plain.clip.fade_out = 0.0;
+        let af = part_audio(&plain);
+        assert!(!af.contains("volume") && !af.contains("afade") && !af.contains("atempo"));
+    }
+    #[test]
+    fn atempo_chains_cover_quarter_to_four_times() {
+        assert_eq!(atempo(1.0), "");
+        assert_eq!(atempo(1.5), "atempo=1.500000");
+        assert_eq!(atempo(4.0), "atempo=2,atempo=2.000000");
+        assert_eq!(atempo(0.25), "atempo=0.5,atempo=0.500000");
+    }
+    #[test]
+    fn plan_splits_clips_around_transitions() {
+        use crate::model::Blend;
+        let mut p = Project::new("plan", 320, 180, 25);
+        p.media.push(Media {
+            id: "m".into(),
+            path: "a.mp4".into(),
+            name: "a.mp4".into(),
+            duration: 30.0,
+            width: 320,
+            height: 180,
+            audio: true,
+            kind: MediaKind::Video,
+        });
+        p.clips = vec![
+            Clip::new("a", "m", 0.0, 4.0),
+            Clip::new("b", "m", 10.0, 14.0),
+            Clip::new("c", "m", 20.0, 22.0),
+        ];
+        p.clips[1].speed = 2.0; // 2 s on the timeline
+        p.clips[1].blend = Some(Blend { kind: BlendKind::Dissolve, duration: 1.0 });
+        p.clips[2].blend = Some(Blend { kind: BlendKind::Slide, duration: 1.0 });
+        p.validate().unwrap();
+        let pieces = plan(&p);
+        let shape: Vec<(f64, f64, bool)> = pieces
+            .iter()
+            .map(|x| (x.start, x.len, x.blend.is_some()))
+            .collect();
+        // a[0,3) a→b[3,4) b has no middle (2 s minus 1 + 1) b→c[4,5) c[5,6)
+        assert_eq!(
+            shape,
+            vec![(0.0, 3.0, false), (3.0, 1.0, true), (4.0, 1.0, true), (5.0, 1.0, false)]
+        );
+        let ab = &pieces[1];
+        assert_eq!(ab.parts[0].source_offset(), 3.0);
+        assert_eq!(ab.parts[1].source_offset(), 10.0);
+        let bc = &pieces[2];
+        assert_eq!(bc.parts[0].source_offset(), 12.0, "b is 2x speed: 1 s local = 2 s source");
+        let total: f64 = pieces.iter().map(|x| x.len).sum();
+        assert!((total - p.duration()).abs() < 1e-9);
     }
 }

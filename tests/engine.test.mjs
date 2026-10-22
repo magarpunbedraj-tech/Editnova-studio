@@ -33,6 +33,10 @@ import {
   musicAt,
   musicGain,
   removeItem,
+  setSpeed,
+  setBlend,
+  incoming,
+  maxBlend,
 } from "../src/engine.mjs";
 const sample = () => ({
   ...fresh(),
@@ -40,8 +44,8 @@ const sample = () => ({
     { id: "m", path: "C:\\Footage\\कथा.mp4", duration: 10, name: "कथा.mp4" },
   ],
   clips: [
-    { id: "a", mediaId: "m", in: 1, out: 5, volume: 1, fadeIn: 0, fadeOut: 0 },
-    { id: "b", mediaId: "m", in: 6, out: 9, volume: 1, fadeIn: 0, fadeOut: 0 },
+    { id: "a", mediaId: "m", in: 1, out: 5, volume: 1, fadeIn: 0, fadeOut: 0, speed: 1, blend: null },
+    { id: "b", mediaId: "m", in: 6, out: 9, volume: 1, fadeIn: 0, fadeOut: 0, speed: 1, blend: null },
   ],
 });
 test("empty project is valid", () =>
@@ -118,13 +122,13 @@ test("version 1 projects migrate with default audio settings", () => {
   const { titles, music, duckMusic, ...old } = { ...sample(), version: 1 };
   old.clips = old.clips.map(({ id, mediaId, in: a, out: b }) => ({ id, mediaId, in: a, out: b }));
   const p = validate(migrate(old));
-  assert.equal(p.version, 3);
+  assert.equal(p.version, 4);
   assert.deepEqual([p.titles, p.music, p.duckMusic], [[], [], false]);
   assert.deepEqual(
     [p.clips[0].volume, p.clips[0].fadeIn, p.clips[0].fadeOut],
     [1, 0, 0],
   );
-  assert.equal(migrate(sample()).version, 3);
+  assert.equal(migrate(sample()).version, 4);
   const v2 = { ...sample(), version: 2 };
   delete v2.titles;
   delete v2.music;
@@ -219,4 +223,39 @@ test("music: fits the timeline, plays, fades and validates", () => {
   assert.throws(() => removeMedia(p, "s"));
   assert.throws(() => validate({ ...p, clips: [...p.clips, makeClip("bad", song)] }));
   assert.throws(() => validate({ ...p, titles: [makeTitle("u", 0)] }), "ids are unique");
+});
+
+test("speed changes timeline length and source mapping", () => {
+  const p = setSpeed(sample(), "a", 2); // a: 4 s source -> 2 s
+  assert.equal(duration(p), 5);
+  assert.equal(locate(p, 1).source, 3);
+  assert.equal(locate(p, 2).clip.id, "b");
+  assert.equal(setSpeed(sample(), "a", 10).clips[0].speed, 4);
+  const q = split(setSpeed(sample(), "a", 0.5), 4, "n"); // a: 8 s, split at source 3
+  assert.equal(q.clips[0].out, 3);
+  assert.equal(duration(q), duration(setSpeed(sample(), "a", 0.5)));
+});
+test("transitions overlap clips and report progress", () => {
+  const p = setBlend(sample(), "b", "dissolve", 1); // a 4 s, b 3 s, overlap 1
+  assert.equal(duration(p), 6);
+  assert.deepEqual(starts(p), [0, 3]);
+  assert.equal(locate(p, 3.5).clip.id, "a");
+  const inc = incoming(p, 3.5);
+  assert.equal(inc.clip.id, "b");
+  assert.equal(inc.k, 0.5);
+  assert.equal(inc.source, 6.5);
+  assert.equal(incoming(p, 2), null);
+  assert.equal(setBlend(sample(), "b", "wipe", 9).clips[1].blend.duration, 1.5);
+  assert.throws(() => setBlend(sample(), "a", "dissolve"));
+  assert.equal(setBlend(p, "b", null).clips[1].blend, null);
+});
+test("transitions survive edits safely", () => {
+  const p = setBlend(setFades(sample(), "a", 0, 1), "b", "dip", 1);
+  assert.equal(p.clips[0].fadeOut, 0, "a transition replaces the fade on that edge");
+  assert.throws(() => setFades(p, "a", 0, 1));
+  assert.equal(moveTo(p, "b", 0).clips[0].blend, null, "first clip loses its transition");
+  assert.equal(remove(p, "a").clips[0].blend, null);
+  const t = trim(p, "a", 1, 2); // a is now 1 s, so at most 0.5 s
+  assert.equal(t.clips[1].blend.duration, 0.5);
+  assert.equal(maxBlend(p, 1), 1.5);
 });

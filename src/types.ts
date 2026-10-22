@@ -18,6 +18,15 @@ export interface Clip {
   volume: number;
   fadeIn: number;
   fadeOut: number;
+  /** 0.25 (slow motion) to 4 (fast forward). */
+  speed: number;
+  /** Transition from the previous clip; never on the first clip. */
+  blend: Blend | null;
+}
+export type BlendKind = "dissolve" | "dip" | "wipe" | "slide";
+export interface Blend {
+  kind: BlendKind;
+  duration: number;
 }
 export interface Project {
   version: number;

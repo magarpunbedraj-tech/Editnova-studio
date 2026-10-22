@@ -1,6 +1,6 @@
 use editnova_studio::{
     media,
-    model::{self, Clip, MediaKind, Music, Placement, Project, TextSize, Title},
+    model::{self, Blend, BlendKind, Clip, MediaKind, Music, Placement, Project, TextSize, Title},
 };
 use std::{path::Path, process::Command, sync::atomic::AtomicBool};
 fn fixture(path: &Path, color: &str, audio: bool) {
@@ -378,4 +378,52 @@ fn ducking_lowers_music_under_speech() {
     assert!(window_db(&quiet, 0.8, 0.4) > -20.0);
     assert!(window_db(&ducked, 0.8, 0.4) > -20.0);
     assert!(media::probe(&ducked).unwrap().audio);
+}
+
+#[test]
+fn dissolve_and_speed_change_render_to_the_timeline_length() {
+    let d = tempfile::tempdir().unwrap();
+    let a = d.path().join("red.mp4");
+    let b = d.path().join("blue.mp4");
+    // fixture() makes 2 s files; make longer ones here.
+    for (path, color, audio) in [(&a, "red", true), (&b, "blue", false)] {
+        let mut c = Command::new("ffmpeg");
+        c.args(["-v", "error", "-y", "-f", "lavfi", "-i", &format!("color=c={color}:s=320x180:r=25:d=5")]);
+        if audio {
+            c.args(["-f", "lavfi", "-i", "sine=frequency=440:duration=5", "-c:a", "aac"]);
+        }
+        assert!(c
+            .args(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-t", "5"])
+            .arg(path)
+            .status()
+            .unwrap()
+            .success());
+    }
+    let ma = media::probe(&a).unwrap();
+    let mb = media::probe(&b).unwrap();
+    let mut p = Project::new("Blend", 320, 180, 25);
+    p.clips.push(Clip::new("a", &ma.id, 0.0, 3.0));
+    let mut fast = Clip::new("b", &mb.id, 0.0, 4.0);
+    fast.speed = 2.0; // 2 s on the timeline
+    fast.blend = Some(Blend {
+        kind: BlendKind::Dissolve,
+        duration: 1.0,
+    });
+    p.clips.push(fast);
+    p.media = vec![ma, mb];
+    p.validate().unwrap();
+    assert!((p.duration() - 4.0).abs() < 1e-9);
+    let out = d.path().join("blend.mp4");
+    media::render(&p, &out, &AtomicBool::new(false), |_, _| {}).unwrap();
+    let probe = media::probe(&out).unwrap();
+    assert!((probe.duration - 4.0).abs() < 0.12, "{}", probe.duration);
+    let red = pixel(&out, "1.0");
+    let mid = pixel(&out, "2.5");
+    let blue = pixel(&out, "3.6");
+    assert!(red[0] > 180 && red[2] < 60, "{red:?}");
+    assert!(mid[0] > 70 && mid[2] > 70, "dissolve mixes both: {mid:?}");
+    assert!(blue[2] > 180 && blue[0] < 60, "{blue:?}");
+    // The red clip's tone fades out during the dissolve and is gone after it.
+    assert!(window_db(&out, 0.5, 1.0) > -30.0);
+    assert!(window_db(&out, 3.2, 0.7) < -60.0);
 }

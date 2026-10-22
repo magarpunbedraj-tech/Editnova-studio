@@ -13,6 +13,11 @@ import {
   duplicate,
   setAudio,
   setFades,
+  setSpeed,
+  setBlend,
+  incoming,
+  maxBlend,
+  clipLength,
   trimToPlayhead,
   envelope,
   removeMedia,
@@ -35,7 +40,7 @@ import { api, checkForUpdate, desktop, fileUrl, message, on } from "./api";
 import { clock, fileName } from "./format";
 import { Timeline } from "./ui/Timeline";
 import { Inspector, MediaBin, Welcome } from "./ui/Panels";
-import { MusicInspector, TitleInspector } from "./ui/ItemInspectors";
+import { BlendInspector, MusicInspector, TitleInspector } from "./ui/ItemInspectors";
 import {
   AboutDialog,
   DoneDialog,
@@ -108,6 +113,10 @@ export default function App() {
   const clip = p.clips.find((c) => c.id === selected);
   const clipMedia = clip ? p.media.find((m) => m.id === clip.mediaId) : undefined;
   const selTitle = p.titles.find((t) => t.id === selected);
+  const selBlendIndex = selected.startsWith("tr:")
+    ? p.clips.findIndex((c) => c.id === selected.slice(3))
+    : -1;
+  const selBlend = selBlendIndex > 0 ? p.clips[selBlendIndex] : undefined;
   const selMusic = p.music.find((u) => u.id === selected);
   const selMusicMedia = selMusic ? p.media.find((m) => m.id === selMusic.mediaId) : undefined;
   const song = musicAt(p, time);
@@ -281,7 +290,7 @@ export default function App() {
   }, [playing, at?.clip.id]);
   function advance() {
     if (!at) return;
-    const end = at.start + at.clip.out - at.clip.in;
+    const end = at.start + clipLength(at.clip);
     if (end >= total - 0.001) {
       setPlaying(false);
       setTime(total);
@@ -297,7 +306,7 @@ export default function App() {
           advance();
           return;
         }
-        setTime(at.start + Math.max(0, v.currentTime - at.clip.in));
+        setTime(at.start + Math.max(0, v.currentTime - at.clip.in) / (at.clip.speed || 1));
       }
       id = requestAnimationFrame(tick);
     };
@@ -326,11 +335,32 @@ export default function App() {
     if (a.paused) a.play().catch(() => {});
   }, [time, playing, song?.id, songMedia?.path, p.duckMusic]);
 
-  // Fade and volume preview.
+  // Fade, volume and speed preview.
   const level = at ? envelope(at.clip, time - at.start) : 1;
+  const inc = incoming(p, time);
+  const incMedia = inc ? p.media.find((m) => m.id === inc.clip.mediaId) : undefined;
+  const incSrc = incMedia ? previews[incMedia.path] || incMedia.path : "";
+  const second = useRef<HTMLVideoElement>(null);
+  // How loud each side of a transition is, matching the export's crossfade.
+  const mainShare = !inc ? 1 : inc.kind === "dip" ? Math.max(0, 1 - 2 * inc.k) : 1 - inc.k;
+  const incShare = !inc ? 0 : inc.kind === "dip" ? Math.max(0, 2 * inc.k - 1) : inc.k;
   useEffect(() => {
-    if (video.current && at) video.current.volume = Math.min(1, at.clip.volume * level);
-  }, [level, at?.clip.volume, at?.clip.id]);
+    const v = video.current;
+    if (v && at) {
+      v.volume = Math.min(1, at.clip.volume * level * mainShare);
+      v.playbackRate = at.clip.speed || 1;
+    }
+  }, [level, mainShare, at?.clip.volume, at?.clip.id, at?.clip.speed]);
+  // The incoming clip of a transition plays in a second element on top.
+  useEffect(() => {
+    const v = second.current;
+    if (!v || !inc) return;
+    v.playbackRate = inc.clip.speed || 1;
+    v.volume = Math.min(1, inc.clip.volume * incShare);
+    if (Math.abs(v.currentTime - inc.source) > (playing ? 0.3 : 0.02)) v.currentTime = inc.source;
+    if (playing && v.paused) v.play().catch(() => {});
+    if (!playing && !v.paused) v.pause();
+  }, [time, playing, inc?.clip.id, incShare]);
 
   // ----- Project files -----
   function load(result: Loaded, recovered: boolean) {
@@ -487,6 +517,10 @@ export default function App() {
   const splitHere = () =>
     edit(() => change(split(p, Math.round(time * p.fps) / p.fps, crypto.randomUUID())));
   const removeSelected = () => {
+    if (selBlend) {
+      edit(() => change(setBlend(p, selBlend.id, null)));
+      return;
+    }
     if (!clip && !selTitle && !selMusic) return;
     edit(() => change(removeItem(p, selected)));
     select("");
@@ -681,6 +715,11 @@ export default function App() {
                       <video
                         key={at.clip.id + src}
                         ref={video}
+                        style={
+                          inc?.kind === "slide"
+                            ? { transform: `translateX(${-inc.k * 100}%)` }
+                            : undefined
+                        }
                         src={fileUrl(src)}
                         playsInline
                         preload="auto"
@@ -689,7 +728,8 @@ export default function App() {
                           const v = video.current;
                           if (v) {
                             v.currentTime = at.source;
-                            v.volume = Math.min(1, at.clip.volume * level);
+                            v.playbackRate = at.clip.speed || 1;
+                            v.volume = Math.min(1, at.clip.volume * level * mainShare);
                             if (playing) v.play().catch(() => setPlaying(false));
                           }
                         }}
@@ -699,6 +739,38 @@ export default function App() {
                           setVideoFailed(true);
                         }}
                       />
+                      {inc && incMedia && (
+                        <video
+                          key={inc.clip.id + incSrc}
+                          ref={second}
+                          className="incoming"
+                          src={fileUrl(incSrc)}
+                          playsInline
+                          preload="auto"
+                          style={
+                            inc.kind === "dissolve"
+                              ? { opacity: inc.k }
+                              : inc.kind === "wipe"
+                                ? { clipPath: `inset(0 0 0 ${(1 - inc.k) * 100}%)` }
+                                : inc.kind === "slide"
+                                  ? { transform: `translateX(${(1 - inc.k) * 100}%)` }
+                                  : { opacity: inc.k < 0.5 ? 0 : 1 }
+                          }
+                          onLoadedMetadata={(e) => {
+                            const v = e.currentTarget;
+                            v.currentTime = inc.source;
+                            v.playbackRate = inc.clip.speed || 1;
+                            v.volume = Math.min(1, inc.clip.volume * incShare);
+                            if (playing) v.play().catch(() => {});
+                          }}
+                        />
+                      )}
+                      {inc?.kind === "dip" && (
+                        <div
+                          className="dip-veil"
+                          style={{ opacity: inc.k < 0.5 ? inc.k * 2 : 2 - inc.k * 2 }}
+                        />
+                      )}
                       <div className="fade-veil" style={{ opacity: 1 - level }} />
                       <div className="title-layer" aria-hidden>
                         {titlesAt(p, time).map((t) => (
@@ -800,6 +872,29 @@ export default function App() {
               />
             </div>
           </aside>
+        ) : selBlend ? (
+          <aside className="inspector panel">
+            <div className="panel-head">
+              <h2>Transition</h2>
+            </div>
+            <div className="inspector-body">
+              <BlendInspector
+                from={p.media.find((m) => m.id === p.clips[selBlendIndex - 1].mediaId)?.name ?? "Clip"}
+                to={p.media.find((m) => m.id === selBlend.mediaId)?.name ?? "Clip"}
+                blend={selBlend.blend}
+                max={maxBlend(p, selBlendIndex)}
+                onSet={(kind, d) => {
+                  edit(() => change(setBlend(p, selBlend.id, kind, d)));
+                  if (kind) {
+                    // Show the transition: park the playhead just before it.
+                    const q = setBlend(p, selBlend.id, kind, d);
+                    const at0 = (starts(q)[selBlendIndex] ?? 0) - 0.5;
+                    setTime(Math.max(0, at0));
+                  }
+                }}
+              />
+            </div>
+          </aside>
         ) : selMusic && selMusicMedia ? (
           <aside className="inspector panel">
             <div className="panel-head">
@@ -826,6 +921,7 @@ export default function App() {
             onTrim={(a, b) => edit(() => change(trim(p, clip!.id, a, b)))}
             onVolume={(v) => edit(() => change(setAudio(p, clip!.id, v)))}
             onFades={(a, b) => edit(() => change(setFades(p, clip!.id, a, b)))}
+            onSpeed={(v) => edit(() => change(setSpeed(p, clip!.id, v)))}
             onAction={(a) => {
               if (!clip || !clipMedia) return;
               if (a === "earlier" || a === "later")
@@ -871,7 +967,7 @@ export default function App() {
               Split <kbd>S</kbd>
             </button>
             <button
-              disabled={!(clip || selTitle || selMusic) || busy}
+              disabled={!(clip || selTitle || selMusic || selBlend) || busy}
               onClick={removeSelected}
               title="Remove the selected item (Delete)"
             >

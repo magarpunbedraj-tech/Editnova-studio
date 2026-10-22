@@ -18,7 +18,7 @@ The installer includes the FFmpeg video engine, needs no administrator rights,
 and installs Microsoft WebView2 automatically if your PC lacks it.
 Uninstall from **Settings → Apps**.
 
-## Features (v1.1)
+## Features (v1.2)
 
 - Import MP4, MOV, MKV, WebM, AVI, M4V with the Import button or by dropping
   files on the window. Poster thumbnails in the media list and timeline.
@@ -26,6 +26,9 @@ Uninstall from **Settings → Apps**.
   to playhead (`Q`/`W`), duplicate, delete, undo/redo (100 steps), zoom and fit.
 - Per-clip volume (0–200 %, mute) and fade in/out from black, previewed live
   and rendered identically in the export.
+- Transitions between clips: dissolve, dip to black, wipe and slide (0.1–5 s),
+  with an audio crossfade, previewed live.
+- Speed per clip from 0.25× to 4×, pitch preserved.
 - Titles (`T`): one-line text at top, middle or bottom, three sizes, any
   colour, optional dark box, smooth fades, Nepali/Devanagari supported. Titles
   can span clips and are dragged along their own lane.

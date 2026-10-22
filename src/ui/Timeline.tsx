@@ -212,11 +212,42 @@ export function Timeline(props: Props) {
                   {c.fadeOut > 0 && (
                     <i className="fade out" style={{ width: c.fadeOut * zoom }} />
                   )}
-                  <span className="clip-label">
-                    <b>{m?.name ?? "Missing media"}</b>
+                  {c.blend && (
+                    <i
+                      className="blend-zone"
+                      style={{ width: c.blend.duration * zoom }}
+                      aria-hidden
+                    />
+                  )}
+                  <span
+                    className="clip-label"
+                    style={c.blend ? { left: 7 + c.blend.duration * zoom } : undefined}
+                  >
+                    <b>
+                      {c.speed !== 1 && <em className="speed">{c.speed}×</em>}
+                      {m?.name ?? "Missing media"}
+                    </b>
                     <small>{clock(len)}</small>
                   </span>
                 </div>
+              );
+            })}
+            {p.clips.map((c, i) => {
+              if (i === 0 || drag?.moved) return null;
+              const x = PAD + (begin[i] + (c.blend ? c.blend.duration / 2 : 0)) * zoom;
+              const id = `tr:${c.id}`;
+              return (
+                <button
+                  key={id}
+                  className={`cut ${c.blend ? "has" : ""} ${selected === id ? "selected" : ""}`}
+                  style={{ left: x }}
+                  title={c.blend ? `${c.blend.kind} transition, ${c.blend.duration} s` : "Add a transition"}
+                  aria-label={c.blend ? `Edit ${c.blend.kind} transition` : "Add a transition between these clips"}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={() => props.onSelect(id)}
+                >
+                  <span>{c.blend ? "⧓" : "+"}</span>
+                </button>
               );
             })}
             {!p.clips.length && (

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import type { Media, Music, Project, Title } from "../types";
+import type { Blend, BlendKind, Media, Music, Project, Title } from "../types";
 import { COLORS, MAX_FADE, MAX_TITLE } from "../engine.mjs";
 import { clock } from "../format";
 
@@ -282,6 +282,82 @@ export function MusicInspector(props: {
           Remove music
         </button>
       </section>
+    </>
+  );
+}
+
+const BLEND_LABELS: [BlendKind, string, string][] = [
+  ["dissolve", "Dissolve", "The two clips melt into each other."],
+  ["dip", "Dip to black", "Fades to black, then up into the next clip."],
+  ["wipe", "Wipe", "The next clip sweeps in from the right."],
+  ["slide", "Slide", "The next clip pushes the current one off to the left."],
+];
+
+export function BlendInspector(props: {
+  from: string;
+  to: string;
+  blend: Blend | null;
+  max: number;
+  onSet: (kind: BlendKind | null, duration: number) => void;
+}) {
+  const b = props.blend;
+  const d = b?.duration ?? Math.min(1, props.max);
+  return (
+    <>
+      <p className="clip-title">
+        {props.from} → {props.to}
+      </p>
+      <section>
+        <h3>Style</h3>
+        <div className="blend-list" role="radiogroup" aria-label="Transition style">
+          <button
+            role="radio"
+            aria-checked={!b}
+            className={!b ? "on" : ""}
+            onClick={() => props.onSet(null, d)}
+          >
+            <b>Cut</b>
+            <small>Jump straight to the next clip.</small>
+          </button>
+          {BLEND_LABELS.map(([k, label, text]) => (
+            <button
+              key={k}
+              role="radio"
+              aria-checked={b?.kind === k}
+              className={b?.kind === k ? "on" : ""}
+              disabled={props.max < 0.1}
+              onClick={() => props.onSet(k, d)}
+            >
+              <b>{label}</b>
+              <small>{text}</small>
+            </button>
+          ))}
+        </div>
+        {props.max < 0.1 && <p className="hint">These clips are too short for a transition.</p>}
+      </section>
+      {b && (
+        <section>
+          <h3>Length</h3>
+          <Num
+            label={`Seconds (up to ${props.max.toFixed(1)})`}
+            value={b.duration}
+            step={0.25}
+            min={0.1}
+            max={props.max}
+            onCommit={(v) => props.onSet(b.kind, v)}
+          />
+          <div className="chips">
+            {[0.5, 1, 2].map((v) => (
+              <button key={v} disabled={v > props.max + 1e-6} onClick={() => props.onSet(b.kind, v)}>
+                {v} s
+              </button>
+            ))}
+          </div>
+          <p className="hint">
+            The clips overlap for this long, so the film gets {b.duration.toFixed(2)} s shorter.
+          </p>
+        </section>
+      )}
     </>
   );
 }

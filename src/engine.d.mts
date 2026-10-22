@@ -1,10 +1,23 @@
-import type { Clip, Media, Music, Project, Title } from "./types";
+import type { BlendKind, Clip, Media, Music, Project, Title } from "./types";
 export type History = { past: Project[]; present: Project; future: Project[] };
 export const VERSION: number;
 export const FPS: number[];
 export const MAX_FADE: number;
 export const MAX_VOLUME: number;
 export const MAX_TITLE: number;
+export const MIN_SPEED: number;
+export const MAX_SPEED: number;
+export const MAX_BLEND: number;
+export const BLENDS: BlendKind[];
+export const SPEEDS: number[];
+export function incoming(
+  p: Project,
+  time: number,
+): { clip: Clip; index: number; start: number; source: number; kind: BlendKind; k: number } | null;
+export function maxBlend(p: Project, index: number): number;
+export function fitBlends(p: Project): Project;
+export function setSpeed(p: Project, id: string, speed: number): Project;
+export function setBlend(p: Project, id: string, kind: BlendKind | null, duration?: number): Project;
 export const COLORS: string[];
 export function makeTitle(id: string, start: number, text?: string): Title;
 export function addTitle(p: Project, t: Title): Project;

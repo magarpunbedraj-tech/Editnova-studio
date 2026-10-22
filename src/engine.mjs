@@ -1,6 +1,10 @@
 // Pure timeline operations. Every function returns a new project and never
 // mutates its input. Rules here mirror src-tauri/src/model.rs exactly.
-export const VERSION = 3;
+export const VERSION = 4;
+export const MIN_SPEED = 0.25;
+export const MAX_SPEED = 4;
+export const MAX_BLEND = 5;
+export const BLENDS = ["dissolve", "dip", "wipe", "slide"];
 export const MAX_TITLE = 80;
 export const COLORS = ["#ffffff", "#ffd84a", "#ff6b6b", "#7cf0c5", "#9fd0ff", "#111111"];
 export const FPS = [24, 25, 30, 60];
@@ -20,21 +24,32 @@ export const fresh = () => ({
   duckMusic: true,
 });
 
-export const clipLength = (c) => c.out - c.in;
-export const duration = (p) => p.clips.reduce((s, c) => s + clipLength(c), 0);
+/** Seconds a clip lasts on the timeline, after its speed change. */
+export const clipLength = (c) => (c.out - c.in) / (c.speed || 1);
+const blendLen = (c) => (c && c.blend ? c.blend.duration : 0);
+/** Timeline length: clip lengths minus transition overlaps. */
+export const duration = (p) =>
+  p.clips.reduce((s, c) => s + clipLength(c) - blendLen(c), 0);
 
 export function makeClip(id, media, a = 0, b = media.duration) {
-  return { id, mediaId: media.id, in: a, out: b, volume: 1, fadeIn: 0, fadeOut: 0 };
+  return { id, mediaId: media.id, in: a, out: b, volume: 1, fadeIn: 0, fadeOut: 0, speed: 1, blend: null };
 }
 
 /** Upgrades an older supported project (version 1 or 2) to the current format. */
 export function migrate(p) {
   if (!p || typeof p !== "object") throw Error("Not an EditNova project");
-  if (p.version !== 1 && p.version !== 2) return p;
+  if (!(p.version >= 1 && p.version < VERSION)) return p;
   return {
     ...p,
     version: VERSION,
-    clips: (p.clips || []).map((c) => ({ volume: 1, fadeIn: 0, fadeOut: 0, ...c })),
+    clips: (p.clips || []).map((c) => ({
+      volume: 1,
+      fadeIn: 0,
+      fadeOut: 0,
+      speed: 1,
+      blend: null,
+      ...c,
+    })),
     titles: p.titles || [],
     music: p.music || [],
     duckMusic: p.duckMusic ?? false,
@@ -43,31 +58,82 @@ export function migrate(p) {
 
 const isAudio = (m) => m && m.kind === "audio";
 
+/** Sequence start time of each clip, in timeline order. */
+export function starts(p) {
+  let t = 0,
+    prev = 0;
+  return p.clips.map((c) => {
+    t += prev - blendLen(c);
+    prev = clipLength(c);
+    return t;
+  });
+}
+
+/** The clip playing at a timeline time. During a transition, the outgoing clip. */
 export function locate(p, time) {
-  let start = 0;
+  const st = starts(p);
   for (let i = 0; i < p.clips.length; i++) {
     const c = p.clips[i],
-      end = start + clipLength(c);
-    if (time < end - 1e-6)
+      end = st[i] + clipLength(c);
+    if (time >= st[i] - 1e-9 && time < end - 1e-6)
       return {
         clip: c,
         index: i,
-        start,
-        source: c.in + Math.max(0, time - start),
+        start: st[i],
+        source: c.in + Math.max(0, time - st[i]) * (c.speed || 1),
       };
-    start = end;
   }
   return null;
 }
 
-/** Sequence start time of each clip, in timeline order. */
-export function starts(p) {
-  let t = 0;
-  return p.clips.map((c) => {
-    const s = t;
-    t += clipLength(c);
-    return s;
+/** During a transition, the incoming clip and progress 0–1; otherwise null. */
+export function incoming(p, time) {
+  const st = starts(p);
+  for (let i = 1; i < p.clips.length; i++) {
+    const c = p.clips[i];
+    if (!c.blend) continue;
+    const k = (time - st[i]) / c.blend.duration;
+    if (k >= 0 && k < 1)
+      return {
+        clip: c,
+        index: i,
+        start: st[i],
+        source: c.in + (time - st[i]) * (c.speed || 1),
+        kind: c.blend.kind,
+        k,
+      };
+  }
+  return null;
+}
+
+/** Largest transition allowed into clip `i`. */
+export function maxBlend(p, i) {
+  if (i < 1 || i >= p.clips.length) return 0;
+  return Math.min(MAX_BLEND, clipLength(p.clips[i - 1]) / 2, clipLength(p.clips[i]) / 2);
+}
+
+/**
+ * Keeps transitions valid after any edit: none on the first clip, none longer
+ * than half of either neighbour, and no fades on blended edges.
+ */
+export function fitBlends(p) {
+  const q = { ...p, clips: p.clips.map((c) => ({ ...c })) };
+  q.clips.forEach((c, i) => {
+    if (!c.blend) return;
+    if (i === 0) {
+      c.blend = null;
+      return;
+    }
+    const max = Math.floor(maxBlend(q, i) * 100) / 100;
+    if (max < 0.1) {
+      c.blend = null;
+      return;
+    }
+    c.blend = { ...c.blend, duration: Math.min(c.blend.duration, max) };
+    c.fadeIn = 0;
+    q.clips[i - 1].fadeOut = 0;
   });
+  return q;
 }
 
 export function validate(p) {
@@ -109,7 +175,10 @@ export function validate(p) {
       !c.id ||
       ![c.in, c.out].every(Number.isFinite) ||
       c.in < 0 ||
-      c.out - c.in < 1 / p.fps - 1e-6 ||
+      !Number.isFinite(c.speed) ||
+      c.speed < MIN_SPEED ||
+      c.speed > MAX_SPEED ||
+      clipLength(c) < 1 / p.fps - 1e-6 ||
       c.out > m.duration + 0.05
     )
       throw Error("Clip in and out points must stay inside the source video");
@@ -119,6 +188,25 @@ export function validate(p) {
     checkFades(c.fadeIn, c.fadeOut, clipLength(c));
     clips.add(c.id);
   }
+  p.clips.forEach((c, i) => {
+    const prev = p.clips[i - 1],
+      next = p.clips[i + 1];
+    if (c.blend) {
+      if (!prev) throw Error("The first clip cannot have a transition");
+      const d = c.blend.duration;
+      if (
+        !BLENDS.includes(c.blend.kind) ||
+        !Number.isFinite(d) ||
+        d < 0.1 ||
+        d > maxBlend(p, i) + 1e-6
+      )
+        throw Error("A transition can last at most half of the shorter clip, up to 5 s");
+      if (c.fadeIn > 0 || prev.fadeOut > 0)
+        throw Error("Remove the fade on clips joined by a transition");
+    }
+    if (c.fadeIn + c.fadeOut + blendLen(c) + blendLen(next) > clipLength(c) + 1e-6)
+      throw Error("Fades and transitions on this clip overlap. Shorten one.");
+  });
   if (!Array.isArray(p.titles) || !Array.isArray(p.music) || p.titles.length > 500 || p.music.length > 500)
     throw Error("Invalid project");
   for (const t of p.titles) {
@@ -182,7 +270,7 @@ function withClip(p, id, fn) {
   const c = q.clips.find((c) => c.id === id);
   if (!c) throw Error("Select a clip first");
   fn(c, q);
-  return validate(q);
+  return validate(fitBlends(q));
 }
 
 /** Keeps fades inside a clip whose length just changed. */
@@ -209,29 +297,27 @@ export function trimToPlayhead(p, time, side) {
   const at = locate(p, time);
   if (!at) throw Error("Move the playhead over a clip first");
   const f = 1 / p.fps;
+  const sf = f * (at.clip.speed || 1);
   if (side === "in") {
-    if (at.clip.out - at.source < f) throw Error("Leave at least one frame in the clip");
+    if (at.clip.out - at.source < sf) throw Error("Leave at least one frame in the clip");
     return trim(p, at.clip.id, at.source, at.clip.out);
   }
-  if (at.source - at.clip.in < f) throw Error("Leave at least one frame in the clip");
+  if (at.source - at.clip.in < sf) throw Error("Leave at least one frame in the clip");
   return trim(p, at.clip.id, at.clip.in, at.source);
 }
 
 export function split(p, time, id) {
   const at = locate(p, time);
-  if (
-    !at ||
-    at.source - at.clip.in < 1 / p.fps ||
-    at.clip.out - at.source < 1 / p.fps
-  )
+  const sf = (at ? at.clip.speed || 1 : 1) / p.fps;
+  if (!at || at.source - at.clip.in < sf || at.clip.out - at.source < sf)
     throw Error("Split must leave at least one frame on each side");
   const q = structuredClone(p);
   const left = { ...at.clip, out: at.source, fadeOut: 0 },
-    right = { ...at.clip, id, in: at.source, fadeIn: 0 };
+    right = { ...at.clip, id, in: at.source, fadeIn: 0, blend: null };
   fitFades(left);
   fitFades(right);
   q.clips.splice(at.index, 1, left, right);
-  return validate(q);
+  return validate(fitBlends(q));
 }
 
 export function reorder(p, id, delta) {
@@ -240,7 +326,7 @@ export function reorder(p, id, delta) {
     j = i + delta;
   if (i >= 0 && j >= 0 && j < q.clips.length)
     [q.clips[i], q.clips[j]] = [q.clips[j], q.clips[i]];
-  return q;
+  return fitBlends(q);
 }
 
 /** Moves a clip so it ends up at position `to` (0-based) in the sequence. */
@@ -250,19 +336,19 @@ export function moveTo(p, id, to) {
   if (i < 0) return q;
   const [c] = q.clips.splice(i, 1);
   q.clips.splice(Math.max(0, Math.min(to, q.clips.length)), 0, c);
-  return q;
+  return fitBlends(q);
 }
 
 export function remove(p, id) {
-  return { ...p, clips: p.clips.filter((c) => c.id !== id) };
+  return fitBlends({ ...p, clips: p.clips.filter((c) => c.id !== id) });
 }
 
 export function duplicate(p, id, newId) {
   const q = structuredClone(p),
     i = q.clips.findIndex((c) => c.id === id);
   if (i < 0) throw Error("Select a clip first");
-  q.clips.splice(i + 1, 0, { ...q.clips[i], id: newId });
-  return validate(q);
+  q.clips.splice(i + 1, 0, { ...q.clips[i], id: newId, blend: null, fadeIn: 0 });
+  return validate(fitBlends(q));
 }
 
 export function setAudio(p, id, volume) {
@@ -272,6 +358,9 @@ export function setAudio(p, id, volume) {
 }
 
 export function setFades(p, id, fadeIn, fadeOut) {
+  const i = p.clips.findIndex((c) => c.id === id);
+  if (i >= 0 && ((fadeIn > 0 && p.clips[i].blend) || (fadeOut > 0 && p.clips[i + 1]?.blend)))
+    throw Error("This edge has a transition. Remove the transition to use a fade.");
   return withClip(p, id, (c) => {
     const len = clipLength(c);
     c.fadeIn = Math.min(MAX_FADE, Math.max(0, fadeIn));
@@ -380,14 +469,38 @@ export function musicGain(u, time) {
   return u.volume * Math.max(0, Math.min(1, k));
 }
 
+// ----- Speed and transitions -----
+export const SPEEDS = [0.25, 0.5, 0.75, 1, 1.5, 2, 4];
+export function setSpeed(p, id, speed) {
+  return withClip(p, id, (c) => {
+    c.speed = Math.round(Math.min(MAX_SPEED, Math.max(MIN_SPEED, speed)) * 100) / 100;
+  });
+}
+/** Sets (or with kind null removes) the transition into clip `id`. */
+export function setBlend(p, id, kind, d = 1) {
+  const i = p.clips.findIndex((c) => c.id === id);
+  if (i < 1) throw Error("Transitions go between two clips");
+  const q = { ...p, clips: p.clips.map((c) => ({ ...c })) };
+  if (!kind) {
+    q.clips[i].blend = null;
+    return validate(q);
+  }
+  const max = maxBlend(q, i);
+  if (max < 0.1) throw Error("These clips are too short for a transition");
+  q.clips[i].blend = { kind, duration: Math.round(Math.min(Math.max(0.1, d), max) * 100) / 100 };
+  q.clips[i].fadeIn = 0;
+  q.clips[i - 1].fadeOut = 0;
+  return validate(q);
+}
+
 /** Removes a clip, title or music item by id. */
 export function removeItem(p, id) {
-  return {
+  return fitBlends({
     ...p,
     clips: p.clips.filter((c) => c.id !== id),
     titles: p.titles.filter((t) => t.id !== id),
     music: p.music.filter((u) => u.id !== id),
-  };
+  });
 }
 
 export function commit(history, next) {
