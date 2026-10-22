@@ -41,6 +41,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          trap { Write-Output "::error title=${{ github.job }} step failed::$($_.Exception.Message)"; exit 1 }
           $assets = gh release view latest --repo BtbN/FFmpeg-Builds --json assets --jq '.assets[].name'
           $zip = $assets | Where-Object { $_ -match '^ffmpeg-n(\d+)\.(\d+)-latest-win64-gpl-\d+\.\d+\.zip$' } |
             Sort-Object { [version]($_ -replace '^ffmpeg-n(\d+\.\d+)-.*$','$1') } | Select-Object -Last 1
@@ -76,18 +77,23 @@ jobs:
 
       - run: npm ci
       - run: npm test
-      - run: npm run build
+      - name: Type-check and bundle UI
+        shell: pwsh
+        run: ./scripts/ci-run.ps1 -Title "UI build" -Command "npm run build"
       - name: Rust unit and real-render tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --locked
+        shell: pwsh
+        run: ./scripts/ci-run.ps1 -Title "Rust tests" -Command "cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --locked"
 
       - name: Build installer
-        run: npx tauri build --config src-tauri/tauri.release.conf.json
+        shell: pwsh
+        run: ./scripts/ci-run.ps1 -Title "Installer build" -Command "npx tauri build --config src-tauri/tauri.release.conf.json"
 
       - name: Collect installer
         id: collect
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          trap { Write-Output "::error title=${{ github.job }} step failed::$($_.Exception.Message)"; exit 1 }
           $setup = Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
           if (-not $setup) { throw "Installer was not produced" }
           $version = (Get-Content package.json | ConvertFrom-Json).version
@@ -102,6 +108,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          trap { Write-Output "::error title=${{ github.job }} step failed::$($_.Exception.Message)"; exit 1 }
           $p = Start-Process dist-installer/EditNova-Studio-Setup.exe -ArgumentList '/S' -PassThru -Wait
           if ($p.ExitCode -ne 0) { throw "Installer exit code $($p.ExitCode)" }
           $dir = Join-Path $env:LOCALAPPDATA 'EditNova Studio'
