@@ -434,9 +434,13 @@ pub fn hardware_encoder_works() -> bool {
     run(c, &never).is_ok()
 }
 
+pub fn frame_count(len: f64, fps: u32) -> u64 {
+    ((len * fps as f64).round() as u64).max(1)
+}
+
 pub fn video_filter(p: &Project, len: f64, fade_in: f64, fade_out: f64) -> String {
     let mut vf = format!(
-        "scale={w}:{h}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={f},format=yuv420p",
+        "setpts=PTS-STARTPTS,scale={w}:{h}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={f},tpad=stop_mode=clone:stop_duration=1,format=yuv420p",
         w = p.width,
         h = p.height,
         f = p.fps
@@ -565,6 +569,10 @@ pub fn render_with(
             if actual.audio { "0:a:0" } else { "1:a:0" },
             "-t",
             &format!("{len:.6}"),
+            // An exact frame count keeps every segment, and so the joined
+            // video, precisely as long as the timeline says.
+            "-frames:v",
+            &frame_count(len, p.fps).to_string(),
             "-vf",
             &video_filter(p, len, clip.fade_in, clip.fade_out),
             "-af",
@@ -657,6 +665,13 @@ mod tests {
         let unc = PathBuf::from(r"\\?\UNC\server\share\a.mp4");
         assert_eq!(simplify(unc.clone()), unc);
         assert_eq!(simplify(PathBuf::from("/tmp/a.mp4")), PathBuf::from("/tmp/a.mp4"));
+    }
+    #[test]
+    fn frame_count_rounds_to_whole_frames() {
+        assert_eq!(frame_count(0.5, 30), 15);
+        assert_eq!(frame_count(1.0 / 30.0, 30), 1);
+        assert_eq!(frame_count(0.0001, 24), 1);
+        assert_eq!(frame_count(2.99, 25), 75);
     }
     #[test]
     fn parses_latest_progress_position() {
