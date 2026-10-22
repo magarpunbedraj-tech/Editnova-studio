@@ -1,50 +1,38 @@
-# Phase 1 validation report
+# Test report — EditNova Studio 1.0.0
 
-Date: 22 October 2026. Environment: Linux host, Node 24.19.0, Rust 1.99.1,
-system FFmpeg/FFprobe. These results do not certify Windows behavior.
+Date: 22 October 2026.
+
+## Automated (GitHub Actions, `windows-latest`, every push)
 
 | Check | Result |
 | --- | --- |
-| TypeScript strict check + Vite production build | PASS |
-| JavaScript timeline unit tests | 12 PASS |
-| Rust schema/persistence tests | 4 PASS |
-| Rust real FFmpeg integration tests | 3 PASS |
-| npm dependency audit | No reported vulnerabilities at check time |
-| Rust formatting / parsing | PASS |
-| Linux native desktop compilation | BLOCKED: missing pkg-config / GTK / WebKit development packages; host package installation unavailable |
-| Windows cross-target compile from Linux | BLOCKED at resource generation: `llvm-rc` unavailable; native bridge not fully type-checked |
-| Windows native launch, installer and WebView2 | NOT RUN on Windows |
-| Browser visual / interaction automation | BLOCKED: Chromium launch rejected by host socket/process restrictions |
-| Windows CI workflow | PROVIDED, NOT EXECUTED |
-| RustSec dependency audit | NOT RUN |
+| FFmpeg download with SHA-256 verification | PASS |
+| JavaScript timeline engine tests (`npm test`) | 22 PASS |
+| TypeScript strict type-check + Vite production build | PASS |
+| Rust unit tests (schema, migration, fades/volume, progress parsing, paths, recent list, persistence) | 11 PASS |
+| Rust real-render tests with the bundled FFmpeg | 6 PASS |
+| Tauri desktop compile + NSIS installer build with bundled FFmpeg | PASS |
+| Silent install, bundled `ffmpeg.exe`/`ffprobe.exe`/legal files present | PASS |
+| App launches from the install folder and stays running for 15 s | PASS |
 
-## Executed core coverage
+The real-render tests generate synthetic footage and run the same Rust renderer
+the app uses. They check output dimensions, duration, audio presence, pixel
+colors in clip order, existing-file protection, cancellation, Unicode and shell
+characters in filenames, frame-exact length across 12 cuts with A/V agreement,
+fade-in/fade-out brightness, muting (peak below −60 dB), monotonic progress
+ending at 100 %, and poster-frame creation and reuse.
 
-JavaScript tests cover trim invariants, invalid/NaN ranges, cumulative source
-mapping, split duration preservation, split endpoints, reorder immutability,
-undo/redo branching, bounded history, schema versions, duplicate IDs and Unicode
-JSON roundtrip.
+## UI walkthrough (Chromium, mocked native layer)
 
-Rust persistence tests cover recovery roundtrip, atomic replacement, preserving
-an existing project on an invalid save, malformed JSON and oversized projects.
+Import → clips placed on timeline with poster frames; click-to-seek; split with
+`S`; fade presets; drag a clip to a new position; playback across clips with
+the fade overlay; export dialog → progress with percentage → finished dialog;
+light theme; shortcuts sheet; unsaved-changes prompt on window close; drop
+overlay. No page errors.
 
-Real render integration tests generate original synthetic fixtures with FFmpeg.
-They invoke the **actual Rust media renderer**, not a mocked export function.
-They cover:
-- Probing audio/video metadata and silent-source detection.
-- Trimming/concatenating differently timed clips with and without audio.
-- H.264/AAC output dimensions, approximate duration and decoding.
-- Sampling output pixels to verify red/blue clip order.
-- Twelve consecutive cuts with audio/video stream-duration agreement.
-- Existing-output refusal and byte preservation.
-- Cancellation with no final output publication.
-- Missing files, unsupported extension and invalid video errors.
-- A source filename containing Nepali text, spaces and shell punctuation.
+## Not covered by automation
 
-Tests use short representative synthetic media. Large media, HDR/VFR, GPU
-encoding, a real Windows sound device, seek accuracy, long-session memory,
-installer upgrades, power loss and hostile parser inputs were not certified.
-
-Run the README's Windows acceptance sequence before calling Phase 1 release
-ready or beginning Phase 2. The source contains no compiled installer and makes
-no bug-free or production-ready claim.
+Native file dialogs, real drag-and-drop from Explorer, NVENC on real NVIDIA
+hardware (the CI runner has no GPU, so the CPU path is what is tested), high-DPI
+and multi-monitor layout, very long or HDR/VFR footage, installer upgrades over
+an older version. Check these by hand on your own PC after installing.
